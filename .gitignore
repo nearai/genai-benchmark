@@ -1,0 +1,24 @@
+target/
+output/
+
+# Profile/debug files
+profile*.json
+profile*.json.gz
+*.syms.json
+flamegraph*.txt
+
+# IDE/editor
+.claude/
+.cursor/
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Python cache
+.mypy_cache/
+__pycache__/
+*.pyc
+
+# OS files
+.DS_Store

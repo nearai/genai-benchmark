@@ -1,0 +1,22 @@
+# Example scenario: Test a single provider with ShareGPT dataset
+name: "Single Provider Load Test"
+description: "Load test a single provider with real conversation data"
+
+model: "deepseek-ai/DeepSeek-V3.1"
+
+providers:
+  - name: "NEAR AI Staging"
+    base_url: "https://cloud-stg-api.near.ai/v1"
+    api_key: "${NEAR_API_KEY}"
+
+dataset:
+  type: sharegpt
+  # If path is not provided, it will download from Hugging Face
+  # path: "/tmp/sharegpt.json"
+  skip: 0
+
+num_requests: 100
+concurrency: 10
+rps: 5
+max_tokens: 512
+timeout_secs: 300

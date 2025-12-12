@@ -1,0 +1,29 @@
+# Compare DeepSeek V3.1 across providers
+name: "DeepSeek V3.1 Provider Comparison"
+description: "DeepSeek V3.1 performance comparison: NEAR AI vs Direct Server vs AWS Bedrock"
+
+# Default model (can be overridden per provider)
+model: "deepseek-ai/DeepSeek-V3.1"
+
+providers:
+  - name: "direct (new)"
+    base_url: "http://your-server:8000/v1"
+    api_key: "${DIRECT_API_KEY}"
+    # Uses default model: deepseek-ai/DeepSeek-V3.1
+
+  - name: "bedrock"
+    base_url: "https://bedrock-runtime.us-west-2.amazonaws.com/openai/v1"
+    api_key: "${AWS_BEARER_TOKEN_BEDROCK}"
+    model: "deepseek.v3-v1:0"  # Bedrock-specific model name
+
+dataset:
+  type: sharegpt
+  # Will auto-download from HuggingFace if not cached
+  # Or specify local path: path: "/path/to/sharegpt.json"
+  skip: 0
+
+num_requests: 1000
+concurrency: 10
+rps: 64
+max_tokens: 10000
+timeout_secs: 600

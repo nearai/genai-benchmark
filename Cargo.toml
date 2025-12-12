@@ -1,0 +1,61 @@
+[package]
+name = "genai-benchmark"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "genai_benchmark"
+path = "src/lib.rs"
+
+[[bin]]
+name = "genai-benchmark"
+path = "src/bin/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP client with streaming
+reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest-eventsource = "0.6"
+
+# CLI parsing
+clap = { version = "4", features = ["derive", "env"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# Progress bar
+indicatif = "0.17"
+
+# Statistics
+statrs = "0.17"
+
+# Async utilities
+futures = "0.3"
+async-channel = "2"
+
+# Time handling
+chrono = "0.4"
+
+# Random sampling
+rand = "0.8"
+
+# Tracing/logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# For reading datasets
+csv = "1"
+
+# Profiling profile - use with: cargo build --profile profiling
+# Then run: samply record ./target/profiling/genai-benchmark <args>
+[profile.profiling]
+inherits = "release"
+debug = true
