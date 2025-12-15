@@ -38,7 +38,12 @@ genai-benchmark scenario my-benchmark.yaml
 
 ## Installation
 
-Download pre-built binaries from [Releases](https://github.com/nearai/genai-benchmark/releases), or build from source:
+**One-liner install:**
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/nearai/genai-benchmark/releases/latest/download/genai-benchmark-installer.sh | sh
+```
+
+Or download pre-built binaries from [Releases](https://github.com/nearai/genai-benchmark/releases), or build from source:
 
 ```bash
 cargo install --path .
