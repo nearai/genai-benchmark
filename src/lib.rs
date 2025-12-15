@@ -1448,12 +1448,53 @@ pub fn print_comparison(results: &[BenchmarkResult]) {
 }
 
 /// Load a scenario from a YAML file
+/// Expand environment variables in a string
+/// Replaces ${VAR_NAME} with the value of the environment variable
+fn expand_env_vars(s: &str) -> Result<String> {
+    let re = regex::Regex::new(r"\$\{([A-Z_][A-Z0-9_]*)\}").unwrap();
+    let mut result = s.to_string();
+    let mut missing_vars = Vec::new();
+
+    for caps in re.captures_iter(s) {
+        if let Some(var_name) = caps.get(1) {
+            let var_name_str = var_name.as_str();
+            match std::env::var(var_name_str) {
+                Ok(value) => {
+                    let pattern = format!("${{{}}}", var_name_str);
+                    result = result.replace(&pattern, &value);
+                }
+                Err(_) => {
+                    missing_vars.push(var_name_str.to_string());
+                }
+            }
+        }
+    }
+
+    if !missing_vars.is_empty() {
+        return Err(anyhow!(
+            "Missing required environment variables: {}",
+            missing_vars.join(", ")
+        ));
+    }
+
+    Ok(result)
+}
+
+/// Expand environment variables in a scenario
+pub fn expand_scenario_env_vars(mut scenario: Scenario) -> Result<Scenario> {
+    for provider in &mut scenario.providers {
+        provider.api_key = expand_env_vars(&provider.api_key)?;
+        provider.base_url = expand_env_vars(&provider.base_url)?;
+    }
+    Ok(scenario)
+}
+
 pub fn load_scenario_from_file(path: &str) -> Result<Scenario> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read scenario file: {}", path))?;
     let scenario: Scenario = serde_yaml::from_str(&content)
         .with_context(|| format!("Failed to parse scenario file: {}", path))?;
-    Ok(scenario)
+    expand_scenario_env_vars(scenario)
 }
 
 /// Generate a timestamped output filename

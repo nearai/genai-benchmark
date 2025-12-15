@@ -1,9 +1,9 @@
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use genai_benchmark::{
-    generate_output_filename, load_dataset, load_scenario_from_file, print_comparison,
-    print_result, run_benchmark, run_scenario, save_results_to_file, BenchmarkConfig,
-    DatasetConfig, Scenario,
+    expand_scenario_env_vars, generate_output_filename, load_dataset, load_scenario_from_file,
+    print_comparison, print_result, run_benchmark, run_scenario, save_results_to_file,
+    BenchmarkConfig, DatasetConfig, Scenario,
 };
 use tracing::info;
 
@@ -227,6 +227,7 @@ async fn run_embedded_scenario(name: &str, output_dir: &str, no_save: bool) -> R
 
     info!("Running embedded scenario: {}", name);
     let scenario: Scenario = serde_yaml::from_str(yaml_content)?;
+    let scenario = expand_scenario_env_vars(scenario)?;
 
     let results = run_scenario(&scenario).await?;
 
