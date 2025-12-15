@@ -6,6 +6,7 @@ A high-performance load testing tool for OpenAI-compatible LLM APIs, written in 
 
 - **OpenAI-compatible API support**: Works with any OpenAI-compatible endpoint (vLLM, TGI, Ollama, etc.)
 - **Streaming metrics**: Measures Time to First Token (TTFT), Inter-token Latency (ITL), and Time per Output Token (TPOT)
+- **TEE signature verification**: Verify chat completions come from genuine Trusted Execution Environments (TEE) with signature verification and latency tracking
 - **Built-in scenarios**: Pre-configured benchmarks included in the binary
 - **Provider comparison**: Test the same model across multiple providers and compare results
 - **Detailed statistics**: P50, P90, P95, P99, P100 percentiles for all metrics
@@ -35,6 +36,26 @@ genai-benchmark export near-vs-bedrock > my-benchmark.yaml
 # Edit my-benchmark.yaml
 genai-benchmark scenario my-benchmark.yaml
 ```
+
+### TEE Signature Verification
+
+To enable TEE signature verification for a provider, add `verify: true` to the provider configuration in your scenario YAML:
+
+```yaml
+providers:
+  - name: "NEAR AI"
+    base_url: "https://cloud-api.near.ai/v1"
+    api_key: "${NEARAI_API_KEY}"
+    verify: true  # Enable TEE signature verification
+```
+
+When enabled, the benchmark will:
+- Fetch the TEE signature for each chat completion from `/signature/{chat_id}`
+- Track verification success/failure rates
+- Measure and report verification latency separately
+- Include verification time in the total request duration metrics
+
+The verification results are displayed in the benchmark output with separate latency statistics.
 
 ## Installation
 
