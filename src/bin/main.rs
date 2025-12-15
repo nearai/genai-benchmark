@@ -222,8 +222,12 @@ async fn run_scenario_file(file: &str, output_dir: &str, no_save: bool) -> Resul
 }
 
 async fn run_embedded_scenario(name: &str, output_dir: &str, no_save: bool) -> Result<()> {
-    let yaml_content = get_embedded_scenario(name)
-        .ok_or_else(|| anyhow!("Unknown scenario: '{}'. Use 'list' to see available scenarios.", name))?;
+    let yaml_content = get_embedded_scenario(name).ok_or_else(|| {
+        anyhow!(
+            "Unknown scenario: '{}'. Use 'list' to see available scenarios.",
+            name
+        )
+    })?;
 
     info!("Running embedded scenario: {}", name);
     let scenario: Scenario = serde_yaml::from_str(yaml_content)?;
@@ -249,16 +253,24 @@ async fn run_embedded_scenario(name: &str, output_dir: &str, no_save: bool) -> R
 }
 
 fn export_scenario(name: &str) -> Result<()> {
-    let yaml_content = get_embedded_scenario(name)
-        .ok_or_else(|| anyhow!("Unknown scenario: '{}'. Use 'list' to see available scenarios.", name))?;
+    let yaml_content = get_embedded_scenario(name).ok_or_else(|| {
+        anyhow!(
+            "Unknown scenario: '{}'. Use 'list' to see available scenarios.",
+            name
+        )
+    })?;
 
     println!("{}", yaml_content);
     Ok(())
 }
 
 fn describe_scenario(name: &str) -> Result<()> {
-    let yaml_content = get_embedded_scenario(name)
-        .ok_or_else(|| anyhow!("Unknown scenario: '{}'. Use 'list' to see available scenarios.", name))?;
+    let yaml_content = get_embedded_scenario(name).ok_or_else(|| {
+        anyhow!(
+            "Unknown scenario: '{}'. Use 'list' to see available scenarios.",
+            name
+        )
+    })?;
 
     let scenario: Scenario = serde_yaml::from_str(yaml_content)?;
 
@@ -282,7 +294,10 @@ fn describe_scenario(name: &str) -> Result<()> {
     for provider in &scenario.providers {
         println!("  - {}", provider.name);
         println!("    URL: {}", provider.base_url);
-        println!("    Model: {}", provider.model.as_ref().unwrap_or(&scenario.model));
+        println!(
+            "    Model: {}",
+            provider.model.as_ref().unwrap_or(&scenario.model)
+        );
     }
     println!();
 
@@ -365,6 +380,7 @@ async fn run_single_benchmark(args: &Args) -> Result<()> {
         rps: args.rps,
         timeout_secs: args.timeout,
         disable_prewarm: false,
+        verify: false,
     };
 
     let result = run_benchmark(&config, prompts, args.num_requests).await?;

@@ -23,8 +23,8 @@ dataset:
   # Or specify local path: path: "/path/to/sharegpt.json"
   skip: 0
 
-num_requests: 128
-concurrency: 10
-rps: 64
+num_requests: 1000
+concurrency: 64
+rps: 32
 max_tokens: 10000
 timeout_secs: 600

@@ -8,6 +8,7 @@ providers:
   - name: "NEAR AI"
     base_url: "https://cloud-api.near.ai/v1"
     api_key: "${NEARAI_API_KEY}"
+    verify: true
 
 dataset:
   type: sharegpt

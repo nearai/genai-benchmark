@@ -56,6 +56,9 @@ pub struct BenchmarkConfig {
     /// Disable connection pre-warming
     #[serde(default)]
     pub disable_prewarm: bool,
+    /// Enable TEE signature verification
+    #[serde(default)]
+    pub verify: bool,
 }
 
 fn default_max_tokens() -> u32 {
@@ -90,6 +93,9 @@ pub struct ProviderConfig {
     /// Optional model override (if different from scenario's model)
     #[serde(default)]
     pub model: Option<String>,
+    /// Enable TEE signature verification
+    #[serde(default)]
+    pub verify: bool,
 }
 
 /// Dataset configuration
@@ -189,6 +195,12 @@ pub struct RequestMetrics {
     pub chunk_count: u32,
     pub output_chars: usize,
     pub got_usage: bool,
+    /// Whether TEE signature verification was attempted
+    pub verification_attempted: bool,
+    /// Whether TEE signature verification succeeded
+    pub verification_success: bool,
+    /// Time taken for TEE signature verification (ms)
+    pub verification_time_ms: f64,
 }
 
 impl RequestMetrics {
@@ -219,6 +231,12 @@ pub struct BenchmarkResult {
     pub total_input_tokens: u64,
     pub total_output_tokens: u64,
     pub total_chunks: u64,
+    /// Number of requests where TEE verification was attempted
+    pub verification_attempted: usize,
+    /// Number of requests where TEE verification succeeded
+    pub verification_success: usize,
+    /// Number of requests where TEE verification failed
+    pub verification_failed: usize,
     #[serde(skip)]
     pub ttft_values: Vec<f64>,
     #[serde(skip)]
@@ -229,6 +247,9 @@ pub struct BenchmarkResult {
     pub request_duration_values: Vec<f64>,
     #[serde(skip)]
     pub tokens_per_request: Vec<u32>,
+    /// Verification latency values (ms) for statistics
+    #[serde(skip)]
+    pub verification_time_values: Vec<f64>,
 }
 
 impl BenchmarkResult {
@@ -316,6 +337,9 @@ struct ChatCompletionRequest {
 
 #[derive(Debug, Deserialize)]
 struct ChatCompletionChunk {
+    /// Chat completion ID for TEE signature verification
+    #[serde(default)]
+    id: Option<String>,
     choices: Vec<ChunkChoice>,
     #[serde(default)]
     usage: Option<Usage>,
@@ -336,6 +360,16 @@ struct Delta {
 struct Usage {
     prompt_tokens: u32,
     completion_tokens: u32,
+}
+
+/// TEE signature response from /signature/{chat_id} endpoint
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+struct SignatureResponse {
+    text: String,
+    signature: String,
+    signing_address: String,
+    signing_algo: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -571,12 +605,48 @@ pub async fn load_dataset(
 // API Client
 // ============================================================================
 
+/// Fetch TEE signature for a chat completion
+async fn fetch_tee_signature(
+    client: &Client,
+    base_url: &str,
+    api_key: &str,
+    chat_id: &str,
+) -> Result<SignatureResponse> {
+    let url = format!("{}/signature/{}", base_url.trim_end_matches('/'), chat_id);
+
+    let mut req_builder = client.get(&url);
+
+    if !api_key.is_empty() {
+        req_builder = req_builder.header("Authorization", format!("Bearer {}", api_key));
+    }
+
+    let response = req_builder
+        .send()
+        .await
+        .context("Failed to fetch TEE signature")?;
+
+    if !response.status().is_success() {
+        return Err(anyhow!(
+            "TEE signature request failed with status: {}",
+            response.status()
+        ));
+    }
+
+    let signature: SignatureResponse = response
+        .json()
+        .await
+        .context("Failed to parse TEE signature response")?;
+
+    Ok(signature)
+}
+
 async fn send_streaming_request(
     client: &Client,
     base_url: &str,
     api_key: &str,
     request: ChatCompletionRequest,
     timeout: Duration,
+    verify: bool,
 ) -> Result<RequestMetrics> {
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let start_time = Instant::now();
@@ -602,6 +672,7 @@ async fn send_streaming_request(
     let mut input_tokens: u32 = 0;
     let mut chunk_count: u32 = 0;
     let mut got_usage: bool = false;
+    let mut chat_id: Option<String> = None;
 
     while let Some(event) = es.next().await {
         match event {
@@ -618,6 +689,14 @@ async fn send_streaming_request(
 
                 match serde_json::from_str::<ChatCompletionChunk>(&msg.data) {
                     Ok(chunk) => {
+                        // Capture chat ID from first chunk (same across all chunks)
+                        if chat_id.is_none() {
+                            if let Some(id) = &chunk.id {
+                                chat_id = Some(id.clone());
+                                debug!("Captured chat ID: {}", id);
+                            }
+                        }
+
                         // Check for usage stats first (may come in final chunk with empty choices)
                         if let Some(usage) = &chunk.usage {
                             input_tokens = usage.prompt_tokens;
@@ -681,6 +760,37 @@ async fn send_streaming_request(
         );
     }
 
+    // TEE signature verification
+    let (verification_attempted, verification_success, verification_time_ms) = if verify {
+        if let Some(id) = &chat_id {
+            debug!("Verifying TEE signature for chat ID: {}", id);
+            let verify_start = Instant::now();
+            match fetch_tee_signature(client, base_url, api_key, id).await {
+                Ok(sig) => {
+                    let verify_time = verify_start.elapsed().as_secs_f64() * 1000.0;
+                    debug!(
+                        "TEE signature verified in {:.2}ms: signing_address={}, algo={}",
+                        verify_time, sig.signing_address, sig.signing_algo
+                    );
+                    (true, true, verify_time)
+                }
+                Err(e) => {
+                    let verify_time = verify_start.elapsed().as_secs_f64() * 1000.0;
+                    warn!(
+                        "TEE signature verification failed for {} in {:.2}ms: {}",
+                        id, verify_time, e
+                    );
+                    (true, false, verify_time)
+                }
+            }
+        } else {
+            warn!("Cannot verify TEE signature: no chat ID received");
+            (true, false, 0.0)
+        }
+    } else {
+        (false, false, 0.0)
+    };
+
     let total_time = start_time.elapsed();
 
     let ttft = first_token_time
@@ -697,6 +807,9 @@ async fn send_streaming_request(
         ttft_ms: ttft,
         total_time_ms: total_time.as_secs_f64() * 1000.0,
         inter_chunk_latencies,
+        verification_attempted,
+        verification_success,
+        verification_time_ms,
     })
 }
 
@@ -783,6 +896,7 @@ pub async fn run_benchmark(
         let config_model = config.model.clone();
         let config_max_tokens = config.max_tokens;
         let config_timeout = config.timeout();
+        let config_verify = config.verify;
 
         active.fetch_add(1, Ordering::SeqCst);
 
@@ -805,6 +919,7 @@ pub async fn run_benchmark(
                 &config_api_key,
                 request,
                 config_timeout,
+                config_verify,
             )
             .await;
 
@@ -829,6 +944,9 @@ pub async fn run_benchmark(
                             ttft_ms: 0.0,
                             total_time_ms: 0.0,
                             inter_chunk_latencies: Vec::new(),
+                            verification_attempted: false,
+                            verification_success: false,
+                            verification_time_ms: 0.0,
                         })
                         .await;
                 }
@@ -858,11 +976,15 @@ pub async fn run_benchmark(
     let mut total_input_tokens: u64 = 0;
     let mut total_output_tokens: u64 = 0;
     let mut total_chunks: u64 = 0;
+    let mut verification_attempted = 0;
+    let mut verification_success = 0;
+    let mut verification_failed = 0;
     let mut ttft_values: Vec<f64> = Vec::new();
     let mut tpot_values: Vec<f64> = Vec::new();
     let mut itl_values: Vec<f64> = Vec::new();
     let mut request_duration_values: Vec<f64> = Vec::new();
     let mut tokens_per_request: Vec<u32> = Vec::new();
+    let mut verification_time_values: Vec<f64> = Vec::new();
 
     while let Ok(metrics) = rx.recv().await {
         if metrics.success {
@@ -876,6 +998,17 @@ pub async fn run_benchmark(
             ttft_values.push(metrics.ttft_ms);
             request_duration_values.push(metrics.total_time_ms);
             tokens_per_request.push(metrics.output_tokens);
+
+            // Track verification stats
+            if metrics.verification_attempted {
+                verification_attempted += 1;
+                verification_time_values.push(metrics.verification_time_ms);
+                if metrics.verification_success {
+                    verification_success += 1;
+                } else {
+                    verification_failed += 1;
+                }
+            }
 
             if let Some(tpot) = metrics.tpot_ms() {
                 tpot_values.push(tpot);
@@ -891,6 +1024,7 @@ pub async fn run_benchmark(
     tpot_values.sort_by(|a, b| a.partial_cmp(b).unwrap());
     itl_values.sort_by(|a, b| a.partial_cmp(b).unwrap());
     request_duration_values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    verification_time_values.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
     // Log summary warning if many requests didn't get usage stats
     if requests_with_usage < successful {
@@ -913,11 +1047,15 @@ pub async fn run_benchmark(
         total_input_tokens,
         total_output_tokens,
         total_chunks,
+        verification_attempted,
+        verification_success,
+        verification_failed,
         ttft_values,
         tpot_values,
         itl_values,
         request_duration_values,
         tokens_per_request,
+        verification_time_values,
     })
 }
 
@@ -961,6 +1099,7 @@ pub async fn run_scenario(scenario: &Scenario) -> Result<Vec<BenchmarkResult>> {
             rps: scenario.rps,
             timeout_secs: scenario.timeout_secs,
             disable_prewarm: false,
+            verify: provider.verify,
         };
 
         let result = run_benchmark(&config, prompts.clone(), scenario.num_requests).await?;
@@ -1000,6 +1139,21 @@ pub fn print_result(result: &BenchmarkResult) {
             "Requests with usage stats:               {}/{}",
             result.requests_with_usage, result.successful_requests
         );
+    }
+
+    // Show TEE verification stats if any verification was attempted
+    if result.verification_attempted > 0 {
+        if result.verification_failed > 0 {
+            println!(
+                "TEE verification:                        {}/{} ⚠️",
+                result.verification_success, result.verification_attempted
+            );
+        } else {
+            println!(
+                "TEE verification:                        {}/{} ✓",
+                result.verification_success, result.verification_attempted
+            );
+        }
     }
 
     println!(
@@ -1150,30 +1304,58 @@ pub fn print_result(result: &BenchmarkResult) {
     }
 
     if !result.request_duration_values.is_empty() {
-        println!("--------------Request Duration--------------------");
+        println!("-----------Total Request Duration----------------");
         println!(
-            "Mean Duration (ms):                      {:.2}",
+            "Mean Total Duration (ms):                 {:.2}",
             mean(&result.request_duration_values)
         );
         println!(
-            "Median Duration (ms):                    {:.2}",
+            "Median Total Duration (ms):               {:.2}",
             median(&result.request_duration_values)
         );
         println!(
-            "P90 Duration (ms):                       {:.2}",
+            "P90 Total Duration (ms):                  {:.2}",
             percentile(&result.request_duration_values, 90.0)
         );
         println!(
-            "P95 Duration (ms):                       {:.2}",
+            "P95 Total Duration (ms):                  {:.2}",
             percentile(&result.request_duration_values, 95.0)
         );
         println!(
-            "P99 Duration (ms):                       {:.2}",
+            "P99 Total Duration (ms):                  {:.2}",
             percentile(&result.request_duration_values, 99.0)
         );
         println!(
-            "P100 Duration (ms):                      {:.2}",
+            "P100 Total Duration (ms):                 {:.2}",
             percentile(&result.request_duration_values, 100.0)
+        );
+    }
+
+    if !result.verification_time_values.is_empty() {
+        println!("-----------TEE Verification Latency---------------");
+        println!(
+            "Mean Verification (ms):                  {:.2}",
+            mean(&result.verification_time_values)
+        );
+        println!(
+            "Median Verification (ms):                {:.2}",
+            median(&result.verification_time_values)
+        );
+        println!(
+            "P90 Verification (ms):                   {:.2}",
+            percentile(&result.verification_time_values, 90.0)
+        );
+        println!(
+            "P95 Verification (ms):                   {:.2}",
+            percentile(&result.verification_time_values, 95.0)
+        );
+        println!(
+            "P99 Verification (ms):                   {:.2}",
+            percentile(&result.verification_time_values, 99.0)
+        );
+        println!(
+            "P100 Verification (ms):                  {:.2}",
+            percentile(&result.verification_time_values, 100.0)
         );
     }
 
@@ -1309,6 +1491,45 @@ pub fn print_comparison(results: &[BenchmarkResult]) {
         }
     }
 
+    // TEE Verification (only show if any provider has verification enabled)
+    let any_verification = results.iter().any(|r| r.verification_attempted > 0);
+    if any_verification {
+        print!("{:<width$}", "TEE Verification", width = metric_width);
+        for r in results {
+            if r.verification_attempted > 0 {
+                print!(
+                    " | {:<width$}",
+                    format!("{}/{}", r.verification_success, r.verification_attempted),
+                    width = col_width
+                );
+            } else {
+                print!(" | {:<width$}", "-", width = col_width);
+            }
+        }
+        println!(" | -");
+
+        // Avg Verification Latency
+        print_row!(
+            "Avg Verify (ms)",
+            results
+                .iter()
+                .map(|r| {
+                    if r.verification_time_values.is_empty() {
+                        0.0
+                    } else {
+                        mean(&r.verification_time_values)
+                    }
+                })
+                .collect(),
+            |v: f64| if v > 0.0 {
+                format!("{:.0} ms", v)
+            } else {
+                "-".to_string()
+            },
+            true
+        );
+    }
+
     // Avg TTFT
     print_row!(
         "Avg TTFT (ms)",
@@ -1388,17 +1609,17 @@ pub fn print_comparison(results: &[BenchmarkResult]) {
     }
     println!(" | -");
 
-    // Avg Request Duration
+    // Avg Total Request Duration
     print_row!(
-        "Avg Duration (ms)",
+        "Avg Total Duration (ms)",
         results.iter().map(|r| r.avg_request_duration()).collect(),
         |v: f64| format!("{:.0} ms", v),
         true
     );
 
-    // P95 Request Duration
+    // P95 Total Request Duration
     print_row!(
-        "P95 Duration (ms)",
+        "P95 Total Duration (ms)",
         results
             .iter()
             .map(|r| percentile(&r.request_duration_values, 95.0))
@@ -1564,6 +1785,14 @@ fn write_result_to_file<W: std::io::Write>(file: &mut W, result: &BenchmarkResul
         "Requests with usage stats:               {}/{}",
         result.requests_with_usage, result.successful_requests
     )?;
+    // Write TEE verification stats if any verification was attempted
+    if result.verification_attempted > 0 {
+        writeln!(
+            file,
+            "TEE verification:                        {}/{}",
+            result.verification_success, result.verification_attempted
+        )?;
+    }
     writeln!(
         file,
         "Maximum request concurrency:             {}",
@@ -1741,36 +1970,70 @@ fn write_result_to_file<W: std::io::Write>(file: &mut W, result: &BenchmarkResul
     }
 
     if !result.request_duration_values.is_empty() {
-        writeln!(file, "--------------Request Duration--------------------")?;
+        writeln!(file, "-----------Total Request Duration----------------")?;
         writeln!(
             file,
-            "Mean Duration (ms):                      {:.2}",
+            "Mean Total Duration (ms):                 {:.2}",
             mean(&result.request_duration_values)
         )?;
         writeln!(
             file,
-            "Median Duration (ms):                    {:.2}",
+            "Median Total Duration (ms):               {:.2}",
             median(&result.request_duration_values)
         )?;
         writeln!(
             file,
-            "P90 Duration (ms):                       {:.2}",
+            "P90 Total Duration (ms):                  {:.2}",
             percentile(&result.request_duration_values, 90.0)
         )?;
         writeln!(
             file,
-            "P95 Duration (ms):                       {:.2}",
+            "P95 Total Duration (ms):                  {:.2}",
             percentile(&result.request_duration_values, 95.0)
         )?;
         writeln!(
             file,
-            "P99 Duration (ms):                       {:.2}",
+            "P99 Total Duration (ms):                  {:.2}",
             percentile(&result.request_duration_values, 99.0)
         )?;
         writeln!(
             file,
-            "P100 Duration (ms):                      {:.2}",
+            "P100 Total Duration (ms):                 {:.2}",
             percentile(&result.request_duration_values, 100.0)
+        )?;
+    }
+
+    if !result.verification_time_values.is_empty() {
+        writeln!(file, "-----------TEE Verification Latency---------------")?;
+        writeln!(
+            file,
+            "Mean Verification (ms):                  {:.2}",
+            mean(&result.verification_time_values)
+        )?;
+        writeln!(
+            file,
+            "Median Verification (ms):                {:.2}",
+            median(&result.verification_time_values)
+        )?;
+        writeln!(
+            file,
+            "P90 Verification (ms):                   {:.2}",
+            percentile(&result.verification_time_values, 90.0)
+        )?;
+        writeln!(
+            file,
+            "P95 Verification (ms):                   {:.2}",
+            percentile(&result.verification_time_values, 95.0)
+        )?;
+        writeln!(
+            file,
+            "P99 Verification (ms):                   {:.2}",
+            percentile(&result.verification_time_values, 99.0)
+        )?;
+        writeln!(
+            file,
+            "P100 Verification (ms):                  {:.2}",
+            percentile(&result.verification_time_values, 100.0)
         )?;
     }
 
@@ -1848,6 +2111,46 @@ fn write_comparison_to_file<W: std::io::Write>(
         }};
     }
 
+    // TEE Verification (only show if any provider has verification enabled)
+    let any_verification = results.iter().any(|r| r.verification_attempted > 0);
+    if any_verification {
+        write!(file, "{:<width$}", "TEE Verification", width = metric_width)?;
+        for r in results {
+            if r.verification_attempted > 0 {
+                write!(
+                    file,
+                    " | {:<width$}",
+                    format!("{}/{}", r.verification_success, r.verification_attempted),
+                    width = col_width
+                )?;
+            } else {
+                write!(file, " | {:<width$}", "-", width = col_width)?;
+            }
+        }
+        writeln!(file, " | -")?;
+
+        // Avg Verification Latency
+        write_row!(
+            "Avg Verify (ms)",
+            results
+                .iter()
+                .map(|r| {
+                    if r.verification_time_values.is_empty() {
+                        0.0
+                    } else {
+                        mean(&r.verification_time_values)
+                    }
+                })
+                .collect(),
+            |v: f64| if v > 0.0 {
+                format!("{:.0} ms", v)
+            } else {
+                "-".to_string()
+            },
+            true
+        );
+    }
+
     // Metrics
     write_row!(
         "Avg TTFT (ms)",
@@ -1871,13 +2174,13 @@ fn write_comparison_to_file<W: std::io::Write>(
         true
     );
     write_row!(
-        "Avg Duration (ms)",
+        "Avg Total Duration (ms)",
         results.iter().map(|r| r.avg_request_duration()).collect(),
         |v: f64| format!("{:.0} ms", v),
         true
     );
     write_row!(
-        "P95 Duration (ms)",
+        "P95 Total Duration (ms)",
         results
             .iter()
             .map(|r| percentile(&r.request_duration_values, 95.0))

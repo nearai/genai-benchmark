@@ -9,6 +9,7 @@ providers:
   - name: "near"
     base_url: "https://cloud-api.near.ai/v1"
     api_key: "${NEARAI_API_KEY}"
+    verify: true
     # Uses default model: deepseek-ai/DeepSeek-V3.1
 
   - name: "bedrock"

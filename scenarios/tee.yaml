@@ -12,10 +12,6 @@ providers:
     verify: true
     # Uses default model: deepseek-ai/DeepSeek-V3.1
 
-  - name: "bedrock"
-    base_url: "https://bedrock-runtime.us-west-2.amazonaws.com/openai/v1"
-    api_key: "${AWS_BEARER_TOKEN_BEDROCK}"
-    model: "deepseek.v3-v1:0"  # Bedrock-specific model name
 
 dataset:
   type: sharegpt
@@ -23,8 +19,8 @@ dataset:
   # Or specify local path: path: "/path/to/sharegpt.json"
   skip: 0
 
-num_requests: 128
-concurrency: 10
-rps: 64
-max_tokens: 10000
-timeout_secs: 600
+num_requests: 16
+concurrency: 16
+rps: 16
+max_tokens: 64
+timeout_secs: 300

@@ -3,7 +3,7 @@ name: "DeepSeek V3.1 Provider Comparison"
 description: "DeepSeek V3.1 performance comparison: NEAR AI vs Direct Server vs AWS Bedrock"
 
 # Default model (can be overridden per provider)
-model: "deepseek-ai/DeepSeek-V3.1"
+model: ""
 
 providers:
   - name: "near"
@@ -23,8 +23,8 @@ dataset:
   # Or specify local path: path: "/path/to/sharegpt.json"
   skip: 0
 
-num_requests: 128
-concurrency: 10
-rps: 64
+num_requests: 1000
+concurrency: 100
+rps: 32
 max_tokens: 10000
 timeout_secs: 600
