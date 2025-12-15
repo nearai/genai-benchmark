@@ -54,6 +54,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # For reading datasets
 csv = "1"
 
+# Regex for parsing
+regex = "1"
+
 # Profiling profile - use with: cargo build --profile profiling
 # Then run: samply record ./target/profiling/genai-benchmark <args>
 [profile.profiling]

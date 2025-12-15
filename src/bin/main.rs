@@ -3,9 +3,27 @@ use clap::{Parser, Subcommand, ValueEnum};
 use genai_benchmark::{
     generate_output_filename, load_dataset, load_scenario_from_file, print_comparison,
     print_result, run_benchmark, run_scenario, save_results_to_file, BenchmarkConfig,
-    DatasetConfig,
+    DatasetConfig, Scenario,
 };
 use tracing::info;
+
+// Embedded scenario files
+const SCENARIO_NEAR_VS_BEDROCK: &str = include_str!("../../scenarios/near_vs_bedrock.yaml");
+const SCENARIO_LOW_CONCURRENCY: &str = include_str!("../../scenarios/low_concurrency.yaml");
+const SCENARIO_SINGLE_PROVIDER: &str = include_str!("../../scenarios/single_provider.yaml");
+
+fn get_embedded_scenario(name: &str) -> Option<&'static str> {
+    match name {
+        "near-vs-bedrock" => Some(SCENARIO_NEAR_VS_BEDROCK),
+        "low-concurrency" => Some(SCENARIO_LOW_CONCURRENCY),
+        "single-provider" => Some(SCENARIO_SINGLE_PROVIDER),
+        _ => None,
+    }
+}
+
+fn list_embedded_scenarios() -> Vec<&'static str> {
+    vec!["near-vs-bedrock", "low-concurrency", "single-provider"]
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "genai-benchmark")]
@@ -93,8 +111,34 @@ enum Commands {
         #[arg(long)]
         no_save: bool,
     },
-    /// Run a single benchmark (default behavior)
-    Run,
+    /// Run an embedded scenario by name
+    Run {
+        /// Scenario name (e.g., near-vs-bedrock, low-concurrency, single-provider)
+        #[arg(required = true)]
+        scenario: String,
+
+        /// Output directory for results (default: ./output)
+        #[arg(long, short, default_value = "output")]
+        output_dir: String,
+
+        /// Skip saving results to file
+        #[arg(long)]
+        no_save: bool,
+    },
+    /// Export an embedded scenario to stdout
+    Export {
+        /// Scenario name to export (e.g., near-vs-bedrock, low-concurrency, single-provider)
+        #[arg(required = true)]
+        scenario: String,
+    },
+    /// Describe a scenario (show config and required env vars)
+    Describe {
+        /// Scenario name to describe (e.g., near-vs-bedrock, low-concurrency, single-provider)
+        #[arg(required = true)]
+        scenario: String,
+    },
+    /// List available embedded scenarios
+    List,
 }
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -141,12 +185,20 @@ async fn main() -> Result<()> {
             file,
             output_dir,
             no_save,
-        }) => run_scenario_command(file, output_dir, *no_save).await,
-        Some(Commands::Run) | None => run_single_benchmark(&args).await,
+        }) => run_scenario_file(file, output_dir, *no_save).await,
+        Some(Commands::Run {
+            scenario,
+            output_dir,
+            no_save,
+        }) => run_embedded_scenario(scenario, output_dir, *no_save).await,
+        Some(Commands::Export { scenario }) => export_scenario(scenario),
+        Some(Commands::Describe { scenario }) => describe_scenario(scenario),
+        Some(Commands::List) => list_scenarios(),
+        None => run_single_benchmark(&args).await,
     }
 }
 
-async fn run_scenario_command(file: &str, output_dir: &str, no_save: bool) -> Result<()> {
+async fn run_scenario_file(file: &str, output_dir: &str, no_save: bool) -> Result<()> {
     info!("Loading scenario from: {}", file);
     let scenario = load_scenario_from_file(file)?;
 
@@ -166,6 +218,117 @@ async fn run_scenario_command(file: &str, output_dir: &str, no_save: bool) -> Re
         save_results_to_file(&results, &scenario.name, &output_path)?;
     }
 
+    Ok(())
+}
+
+async fn run_embedded_scenario(name: &str, output_dir: &str, no_save: bool) -> Result<()> {
+    let yaml_content = get_embedded_scenario(name)
+        .ok_or_else(|| anyhow!("Unknown scenario: '{}'. Use 'list' to see available scenarios.", name))?;
+
+    info!("Running embedded scenario: {}", name);
+    let scenario: Scenario = serde_yaml::from_str(yaml_content)?;
+
+    let results = run_scenario(&scenario).await?;
+
+    for result in &results {
+        print_result(result);
+    }
+
+    if results.len() > 1 {
+        print_comparison(&results);
+    }
+
+    // Save results to file
+    if !no_save {
+        let output_path = generate_output_filename(&scenario.name, output_dir);
+        save_results_to_file(&results, &scenario.name, &output_path)?;
+    }
+
+    Ok(())
+}
+
+fn export_scenario(name: &str) -> Result<()> {
+    let yaml_content = get_embedded_scenario(name)
+        .ok_or_else(|| anyhow!("Unknown scenario: '{}'. Use 'list' to see available scenarios.", name))?;
+
+    println!("{}", yaml_content);
+    Ok(())
+}
+
+fn describe_scenario(name: &str) -> Result<()> {
+    let yaml_content = get_embedded_scenario(name)
+        .ok_or_else(|| anyhow!("Unknown scenario: '{}'. Use 'list' to see available scenarios.", name))?;
+
+    let scenario: Scenario = serde_yaml::from_str(yaml_content)?;
+
+    println!("Scenario: {}", name);
+    println!("Name: {}", scenario.name);
+    if let Some(desc) = &scenario.description {
+        println!("Description: {}", desc);
+    }
+    println!();
+
+    println!("Configuration:");
+    println!("  Model: {}", scenario.model);
+    println!("  Requests: {}", scenario.num_requests);
+    println!("  Concurrency: {}", scenario.concurrency);
+    println!("  RPS: {}", scenario.rps);
+    println!("  Max tokens: {}", scenario.max_tokens);
+    println!("  Timeout: {}s", scenario.timeout_secs);
+    println!();
+
+    println!("Providers:");
+    for provider in &scenario.providers {
+        println!("  - {}", provider.name);
+        println!("    URL: {}", provider.base_url);
+        println!("    Model: {}", provider.model.as_ref().unwrap_or(&scenario.model));
+    }
+    println!();
+
+    // Extract environment variables from the YAML content
+    let env_vars = extract_env_vars(yaml_content);
+    if !env_vars.is_empty() {
+        println!("Required environment variables:");
+        for var in env_vars {
+            println!("  - {}", var);
+        }
+        println!();
+    }
+
+    println!("Usage:");
+    println!("  genai-benchmark run {}  # Run this scenario", name);
+
+    Ok(())
+}
+
+fn extract_env_vars(yaml_content: &str) -> Vec<String> {
+    use std::collections::HashSet;
+    let mut vars = HashSet::new();
+
+    // Match ${VAR_NAME} pattern
+    let re = regex::Regex::new(r"\$\{([A-Z_][A-Z0-9_]*)\}").unwrap();
+    for caps in re.captures_iter(yaml_content) {
+        if let Some(var) = caps.get(1) {
+            vars.insert(var.as_str().to_string());
+        }
+    }
+
+    let mut vars: Vec<String> = vars.into_iter().collect();
+    vars.sort();
+    vars
+}
+
+fn list_scenarios() -> Result<()> {
+    println!("Available embedded scenarios:");
+    for scenario in list_embedded_scenarios() {
+        println!("  - {}", scenario);
+    }
+    println!();
+    println!("Usage:");
+    println!("  genai-benchmark describe <scenario-name>  # Show details and required env vars");
+    println!("  genai-benchmark run <scenario-name>       # Run an embedded scenario");
+    println!("  genai-benchmark export <scenario-name>    # Export scenario to file");
+    println!("  genai-benchmark scenario <path>           # Run a custom YAML file");
     Ok(())
 }
 
