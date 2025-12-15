@@ -2,6 +2,9 @@
 name = "genai-benchmark"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+repository = "https://github.com/nearai/genai-benchmark"
+description = "A high-performance load testing tool for OpenAI-compatible LLM APIs"
 
 [lib]
 name = "genai_benchmark"
@@ -62,3 +65,8 @@ regex = "1"
 [profile.profiling]
 inherits = "release"
 debug = true
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
