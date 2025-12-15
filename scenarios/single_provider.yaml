@@ -5,9 +5,9 @@ description: "Load test a single provider with real conversation data"
 model: "deepseek-ai/DeepSeek-V3.1"
 
 providers:
-  - name: "NEAR AI Staging"
-    base_url: "https://cloud-stg-api.near.ai/v1"
-    api_key: "${NEAR_API_KEY}"
+  - name: "NEAR AI"
+    base_url: "https://cloud-api.near.ai/v1"
+    api_key: "${NEARAI_API_KEY}"
 
 dataset:
   type: sharegpt

@@ -24,7 +24,7 @@ genai-benchmark describe near-vs-bedrock
 
 ### Run a scenario
 ```bash
-export NEAR_API_KEY=your-key
+export NEARAI_API_KEY=your-key
 export AWS_BEARER_TOKEN_BEDROCK=your-token
 genai-benchmark run near-vs-bedrock
 ```
