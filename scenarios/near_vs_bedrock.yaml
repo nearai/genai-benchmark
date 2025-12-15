@@ -1,19 +1,14 @@
 # Compare DeepSeek V3.1 across providers
 name: "DeepSeek V3.1 Provider Comparison"
-description: "DeepSeek V3.1 performance comparison: NEAR AI vs Direct Server vs AWS Bedrock"
+description: "DeepSeek V3.1 performance comparison: NEAR AI vs AWS Bedrock"
 
 # Default model (can be overridden per provider)
 model: "deepseek-ai/DeepSeek-V3.1"
 
 providers:
   - name: "near"
-    base_url: "https://cloud-stg-api.near.ai/v1"
+    base_url: "https://cloud-api.near.ai/v1"
     api_key: "${NEAR_API_KEY}"
-    # Uses default model: deepseek-ai/DeepSeek-V3.1
-
-  - name: "direct"
-    base_url: "http://your-server:8000/v1"
-    api_key: "${DIRECT_API_KEY}"
     # Uses default model: deepseek-ai/DeepSeek-V3.1
 
   - name: "bedrock"
