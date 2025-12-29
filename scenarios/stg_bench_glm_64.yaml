@@ -1,0 +1,28 @@
+# Test GLM-4.6 on NEAR AI with high concurrency
+name: "GLM-4.6 NEAR AI Concurrency Test"
+description: "Test if NEAR AI can sustain 128 concurrent requests with GLM-4.6"
+
+# Default model (can be overridden per provider)
+model: "zai-org/GLM-4.6"
+
+providers:
+  - name: "near"
+    base_url: "https://cloud-stg-api.near.ai/v1"
+    api_key: "${NEARAI_API_KEY}"
+    verify: true
+    # Uses default model: zai-org/GLM-4.6
+
+
+
+dataset:
+  type: sharegpt
+  # Will auto-download from HuggingFace if not cached
+  # Or specify local path: path: "/path/to/sharegpt.json"
+  skip: 0
+
+num_requests: 400
+concurrency: 16
+rps: 16
+max_tokens: 10000
+max_input_tokens: 256
+timeout_secs: 600
