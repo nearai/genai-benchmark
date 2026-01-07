@@ -4,6 +4,7 @@ use anyhow::{anyhow, Context, Result};
 use async_channel::{bounded, Receiver, Sender};
 use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
+use rand::{Rng, SeedableRng};
 use reqwest::Client;
 use reqwest_eventsource::{Event, EventSource};
 use serde::{Deserialize, Serialize};
@@ -59,6 +60,12 @@ pub struct BenchmarkConfig {
     /// Enable TEE signature verification
     #[serde(default)]
     pub verify: bool,
+    /// Enable random prompt selection (default: false, uses sequential)
+    #[serde(default)]
+    pub random_prompt_selection: bool,
+    /// Random seed for prompt selection (None = use system entropy)
+    #[serde(default)]
+    pub random_seed: Option<u64>,
 }
 
 fn default_max_tokens() -> u32 {
@@ -170,6 +177,12 @@ pub struct Scenario {
     /// Request timeout in seconds
     #[serde(default = "default_timeout")]
     pub timeout_secs: u64,
+    /// Enable random prompt selection (default: false, uses sequential)
+    #[serde(default)]
+    pub random_prompt_selection: bool,
+    /// Random seed for prompt selection (None = use system entropy)
+    #[serde(default)]
+    pub random_seed: Option<u64>,
 }
 
 fn default_num_requests() -> usize {
@@ -201,6 +214,8 @@ pub struct RequestMetrics {
     pub verification_success: bool,
     /// Time taken for TEE signature verification (ms)
     pub verification_time_ms: f64,
+    /// First 20 tokens of the prompt for reference
+    pub prompt_preview: String,
 }
 
 impl RequestMetrics {
@@ -212,6 +227,26 @@ impl RequestMetrics {
         }
         let total_after_first: f64 = self.inter_chunk_latencies.iter().sum();
         Some(total_after_first / (self.output_tokens - 1) as f64)
+    }
+}
+
+/// Extract first N tokens (words) from messages for preview
+fn extract_prompt_preview(messages: &[Message], max_tokens: usize) -> String {
+    let full_text: String = messages
+        .iter()
+        .filter(|m| m.role == "user")
+        .map(|m| m.content.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let tokens: Vec<&str> = full_text.split_whitespace().collect();
+    let preview_tokens: Vec<&str> = tokens.iter().take(max_tokens).copied().collect();
+    let preview = preview_tokens.join(" ");
+
+    if tokens.len() > max_tokens {
+        format!("{}...", preview)
+    } else {
+        preview
     }
 }
 
@@ -250,6 +285,9 @@ pub struct BenchmarkResult {
     /// Verification latency values (ms) for statistics
     #[serde(skip)]
     pub verification_time_values: Vec<f64>,
+    /// Sample prompt previews (first 5 unique prompts)
+    #[serde(skip)]
+    pub sample_prompts: Vec<String>,
 }
 
 impl BenchmarkResult {
@@ -647,6 +685,7 @@ async fn send_streaming_request(
     request: ChatCompletionRequest,
     timeout: Duration,
     verify: bool,
+    prompt_preview: String,
 ) -> Result<RequestMetrics> {
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let start_time = Instant::now();
@@ -810,6 +849,7 @@ async fn send_streaming_request(
         verification_attempted,
         verification_success,
         verification_time_ms,
+        prompt_preview,
     })
 }
 
@@ -881,6 +921,27 @@ pub async fn run_benchmark(
         Duration::ZERO
     };
 
+    // Pre-generate prompt indices based on selection strategy
+    let prompt_indices: Vec<usize> = if config.random_prompt_selection {
+        // Generate random indices for all requests
+        let mut rng: Box<dyn rand::RngCore + Send> = match config.random_seed {
+            Some(seed) => {
+                info!("Using random prompt selection with seed: {}", seed);
+                Box::new(rand::rngs::StdRng::seed_from_u64(seed))
+            }
+            None => {
+                info!("Using random prompt selection with system entropy");
+                Box::new(rand::rngs::StdRng::from_entropy())
+            }
+        };
+        (0..num_requests)
+            .map(|_| rng.gen_range(0..prompts.len()))
+            .collect()
+    } else {
+        info!("Using sequential prompt selection");
+        (0..num_requests).map(|i| i % prompts.len()).collect()
+    };
+
     let mut handles = Vec::new();
 
     for i in 0..num_requests {
@@ -890,7 +951,8 @@ pub async fn run_benchmark(
         let progress = progress.clone();
         let active = active_requests.clone();
 
-        let messages = prompts[i % prompts.len()].clone();
+        let messages = prompts[prompt_indices[i]].clone();
+        let prompt_preview = extract_prompt_preview(&messages, 20);
         let config_base_url = config.base_url.clone();
         let config_api_key = config.api_key.clone();
         let config_model = config.model.clone();
@@ -920,6 +982,7 @@ pub async fn run_benchmark(
                 request,
                 config_timeout,
                 config_verify,
+                prompt_preview.clone(),
             )
             .await;
 
@@ -947,6 +1010,7 @@ pub async fn run_benchmark(
                             verification_attempted: false,
                             verification_success: false,
                             verification_time_ms: 0.0,
+                            prompt_preview,
                         })
                         .await;
                 }
@@ -985,6 +1049,7 @@ pub async fn run_benchmark(
     let mut request_duration_values: Vec<f64> = Vec::new();
     let mut tokens_per_request: Vec<u32> = Vec::new();
     let mut verification_time_values: Vec<f64> = Vec::new();
+    let mut sample_prompts: Vec<String> = Vec::new();
 
     while let Ok(metrics) = rx.recv().await {
         if metrics.success {
@@ -998,6 +1063,11 @@ pub async fn run_benchmark(
             ttft_values.push(metrics.ttft_ms);
             request_duration_values.push(metrics.total_time_ms);
             tokens_per_request.push(metrics.output_tokens);
+
+            // Collect sample prompts (first 5 unique ones)
+            if sample_prompts.len() < 5 && !sample_prompts.contains(&metrics.prompt_preview) {
+                sample_prompts.push(metrics.prompt_preview.clone());
+            }
 
             // Track verification stats
             if metrics.verification_attempted {
@@ -1056,6 +1126,7 @@ pub async fn run_benchmark(
         request_duration_values,
         tokens_per_request,
         verification_time_values,
+        sample_prompts,
     })
 }
 
@@ -1100,6 +1171,8 @@ pub async fn run_scenario(scenario: &Scenario) -> Result<Vec<BenchmarkResult>> {
             timeout_secs: scenario.timeout_secs,
             disable_prewarm: false,
             verify: provider.verify,
+            random_prompt_selection: scenario.random_prompt_selection,
+            random_seed: scenario.random_seed,
         };
 
         let result = run_benchmark(&config, prompts.clone(), scenario.num_requests).await?;
@@ -1139,6 +1212,16 @@ pub fn print_result(result: &BenchmarkResult) {
             "Requests with usage stats:               {}/{}",
             result.requests_with_usage, result.successful_requests
         );
+    }
+
+    // Show sample prompts
+    if !result.sample_prompts.is_empty() {
+        println!();
+        println!("Sample prompts used (first 20 tokens):");
+        for (i, prompt) in result.sample_prompts.iter().enumerate() {
+            println!("  {}. {}", i + 1, prompt);
+        }
+        println!();
     }
 
     // Show TEE verification stats if any verification was attempted
@@ -1785,6 +1868,17 @@ fn write_result_to_file<W: std::io::Write>(file: &mut W, result: &BenchmarkResul
         "Requests with usage stats:               {}/{}",
         result.requests_with_usage, result.successful_requests
     )?;
+
+    // Write sample prompts
+    if !result.sample_prompts.is_empty() {
+        writeln!(file)?;
+        writeln!(file, "Sample prompts used (first 20 tokens):")?;
+        for (i, prompt) in result.sample_prompts.iter().enumerate() {
+            writeln!(file, "  {}. {}", i + 1, prompt)?;
+        }
+        writeln!(file)?;
+    }
+
     // Write TEE verification stats if any verification was attempted
     if result.verification_attempted > 0 {
         writeln!(
