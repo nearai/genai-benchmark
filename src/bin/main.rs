@@ -86,6 +86,14 @@ struct Args {
     #[arg(long, global = true)]
     seed: Option<u64>,
 
+    /// Enable random prompt selection (default: sequential)
+    #[arg(long, global = true)]
+    random_prompts: bool,
+
+    /// Random seed for prompt selection (different from dataset seed)
+    #[arg(long, global = true)]
+    prompt_seed: Option<u64>,
+
     /// Enable verbose logging
     #[arg(long, short, global = true)]
     verbose: bool,
@@ -381,6 +389,8 @@ async fn run_single_benchmark(args: &Args) -> Result<()> {
         timeout_secs: args.timeout,
         disable_prewarm: false,
         verify: false,
+        random_prompt_selection: args.random_prompts,
+        random_seed: args.prompt_seed,
     };
 
     let result = run_benchmark(&config, prompts, args.num_requests).await?;
