@@ -1,16 +1,24 @@
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use genai_benchmark::{
-    expand_scenario_env_vars, generate_output_filename, load_dataset, load_scenario_from_file,
-    print_comparison, print_result, run_benchmark, run_scenario, save_results_to_file,
-    BenchmarkConfig, DatasetConfig, Scenario,
+    expand_scenario_env_vars, expand_multi_phase_scenario_env_vars, generate_output_filename, load_dataset, load_scenario_from_file,
+    load_multi_phase_scenario_from_file, print_comparison, print_result, run_benchmark,
+    run_scenario, run_multi_phase_scenario, save_results_to_file,
+    BenchmarkConfig, DatasetConfig, Scenario, MultiPhaseScenario,
 };
 use tracing::info;
 
-// Embedded scenario files
+// Embedded legacy scenario files
 const SCENARIO_NEAR_VS_BEDROCK: &str = include_str!("../../scenarios/near_vs_bedrock.yaml");
 const SCENARIO_LOW_CONCURRENCY: &str = include_str!("../../scenarios/low_concurrency.yaml");
 const SCENARIO_SINGLE_PROVIDER: &str = include_str!("../../scenarios/single_provider.yaml");
+
+// Embedded multi-phase scenario files
+const SCENARIO_MULTI_ROUND_QA: &str = include_str!("../../scenarios/multi_round_qa.yaml");
+const SCENARIO_RAG: &str = include_str!("../../scenarios/rag.yaml");
+const SCENARIO_LONG_DOC_QA: &str = include_str!("../../scenarios/long_doc_qa.yaml");
+const SCENARIO_MULTI_DOC_QA: &str = include_str!("../../scenarios/multi_doc_qa.yaml");
+const SCENARIO_SAME_DOC_QA: &str = include_str!("../../scenarios/same_doc_qa.yaml");
 
 fn get_embedded_scenario(name: &str) -> Option<&'static str> {
     match name {
@@ -21,8 +29,32 @@ fn get_embedded_scenario(name: &str) -> Option<&'static str> {
     }
 }
 
+fn get_embedded_multi_phase_scenario(name: &str) -> Option<&'static str> {
+    match name {
+        "multi-round-qa" => Some(SCENARIO_MULTI_ROUND_QA),
+        "rag" => Some(SCENARIO_RAG),
+        "long-doc-qa" => Some(SCENARIO_LONG_DOC_QA),
+        "multi-doc-qa" => Some(SCENARIO_MULTI_DOC_QA),
+        "same-doc-qa" => Some(SCENARIO_SAME_DOC_QA),
+        _ => None,
+    }
+}
+
 fn list_embedded_scenarios() -> Vec<&'static str> {
-    vec!["near-vs-bedrock", "low-concurrency", "single-provider"]
+    vec![
+        "near-vs-bedrock",
+        "low-concurrency",
+        "single-provider",
+    ]
+}
+
+fn list_embedded_multi_phase_scenarios() -> Vec<&'static str> {
+    vec![
+        "multi-round-qa",
+        "rag",
+        "long-doc-qa",
+        "multi-doc-qa",
+    ]
 }
 
 #[derive(Parser, Debug)]
@@ -119,9 +151,23 @@ enum Commands {
         #[arg(long)]
         no_save: bool,
     },
+    /// Run a multi-phase scenario from a YAML file
+    MultiPhaseScenario {
+        /// Path to the YAML multi-phase scenario file
+        #[arg(required = true)]
+        file: String,
+
+        /// Output directory for results (default: ./output)
+        #[arg(long, short, default_value = "output")]
+        output_dir: String,
+
+        /// Skip saving results to file
+        #[arg(long)]
+        no_save: bool,
+    },
     /// Run an embedded scenario by name
     Run {
-        /// Scenario name (e.g., near-vs-bedrock, low-concurrency, single-provider)
+        /// Scenario name (e.g., near-vs-bedrock, low-concurrency, single-provider, multi-round-qa, rag, long-doc-qa, multi-doc-qa)
         #[arg(required = true)]
         scenario: String,
 
@@ -135,13 +181,13 @@ enum Commands {
     },
     /// Export an embedded scenario to stdout
     Export {
-        /// Scenario name to export (e.g., near-vs-bedrock, low-concurrency, single-provider)
+        /// Scenario name to export (e.g., near-vs-bedrock, low-concurrency, single-provider, multi-round-qa, rag, long-doc-qa, multi-doc-qa)
         #[arg(required = true)]
         scenario: String,
     },
     /// Describe a scenario (show config and required env vars)
     Describe {
-        /// Scenario name to describe (e.g., near-vs-bedrock, low-concurrency, single-provider)
+        /// Scenario name to describe (e.g., near-vs-bedrock, low-concurrency, single-provider, multi-round-qa, rag, long-doc-qa, multi-doc-qa)
         #[arg(required = true)]
         scenario: String,
     },
@@ -194,6 +240,11 @@ async fn main() -> Result<()> {
             output_dir,
             no_save,
         }) => run_scenario_file(file, output_dir, *no_save).await,
+        Some(Commands::MultiPhaseScenario {
+            file,
+            output_dir,
+            no_save,
+        }) => run_multi_phase_scenario_file(file, output_dir, *no_save).await,
         Some(Commands::Run {
             scenario,
             output_dir,
@@ -229,7 +280,56 @@ async fn run_scenario_file(file: &str, output_dir: &str, no_save: bool) -> Resul
     Ok(())
 }
 
+async fn run_multi_phase_scenario_file(file: &str, output_dir: &str, no_save: bool) -> Result<()> {
+    info!("Loading multi-phase scenario from: {}", file);
+    let scenario = load_multi_phase_scenario_from_file(file)?;
+
+    let results = run_multi_phase_scenario(&scenario).await?;
+
+    for result in &results {
+        print_result(result);
+    }
+
+    if results.len() > 1 {
+        print_comparison(&results);
+    }
+
+    // Save results to file
+    if !no_save {
+        let output_path = generate_output_filename(&scenario.name, output_dir);
+        save_results_to_file(&results, &scenario.name, &output_path)?;
+    }
+
+    Ok(())
+}
+
 async fn run_embedded_scenario(name: &str, output_dir: &str, no_save: bool) -> Result<()> {
+    // Try multi-phase scenario first
+    if let Some(yaml_content) = get_embedded_multi_phase_scenario(name) {
+        info!("Running embedded multi-phase scenario: {}", name);
+        let scenario: MultiPhaseScenario = serde_yaml::from_str(yaml_content)?;
+        let scenario = expand_multi_phase_scenario_env_vars(scenario)?;
+
+        let results = run_multi_phase_scenario(&scenario).await?;
+
+        for result in &results {
+            print_result(result);
+        }
+
+        if results.len() > 1 {
+            print_comparison(&results);
+        }
+
+        // Save results to file
+        if !no_save {
+            let output_path = generate_output_filename(&scenario.name, output_dir);
+            save_results_to_file(&results, &scenario.name, &output_path)?;
+        }
+
+        return Ok(());
+    }
+
+    // Fall back to legacy scenario
     let yaml_content = get_embedded_scenario(name).ok_or_else(|| {
         anyhow!(
             "Unknown scenario: '{}'. Use 'list' to see available scenarios.",
@@ -237,7 +337,7 @@ async fn run_embedded_scenario(name: &str, output_dir: &str, no_save: bool) -> R
         )
     })?;
 
-    info!("Running embedded scenario: {}", name);
+    info!("Running embedded legacy scenario: {}", name);
     let scenario: Scenario = serde_yaml::from_str(yaml_content)?;
     let scenario = expand_scenario_env_vars(scenario)?;
 
@@ -261,6 +361,13 @@ async fn run_embedded_scenario(name: &str, output_dir: &str, no_save: bool) -> R
 }
 
 fn export_scenario(name: &str) -> Result<()> {
+    // Try multi-phase scenario first
+    if let Some(yaml_content) = get_embedded_multi_phase_scenario(name) {
+        println!("{}", yaml_content);
+        return Ok(());
+    }
+
+    // Fall back to legacy scenario
     let yaml_content = get_embedded_scenario(name).ok_or_else(|| {
         anyhow!(
             "Unknown scenario: '{}'. Use 'list' to see available scenarios.",
@@ -273,6 +380,54 @@ fn export_scenario(name: &str) -> Result<()> {
 }
 
 fn describe_scenario(name: &str) -> Result<()> {
+    // Try multi-phase scenario first
+    if let Some(yaml_content) = get_embedded_multi_phase_scenario(name) {
+        let scenario: MultiPhaseScenario = serde_yaml::from_str(yaml_content)?;
+
+        println!("Scenario: {} (Multi-Phase)", name);
+        println!("Name: {}", scenario.name);
+        if let Some(desc) = &scenario.description {
+            println!("Description: {}", desc);
+        }
+        println!();
+
+        println!("Configuration:");
+        println!("  Model: {}", scenario.model);
+        println!("  Max tokens: {}", scenario.max_tokens);
+        println!("  Timeout: {}s", scenario.timeout_secs);
+        println!();
+
+        println!("Phases:");
+        for (i, phase) in scenario.phases.iter().enumerate() {
+            println!("  Phase {}: {:?}", i + 1, phase.phase);
+            println!("    Requests: {}", phase.num_requests);
+            if let Some(c) = phase.concurrency {
+                println!("    Concurrency: {}", c);
+            }
+            if let Some(r) = phase.rps {
+                println!("    RPS: {}", r);
+            }
+        }
+        println!();
+
+        println!("Providers:");
+        for provider in &scenario.providers {
+            println!("  - {}", provider.name);
+            println!("    URL: {}", provider.base_url);
+            println!(
+                "    Model: {}",
+                provider.model.as_ref().unwrap_or(&scenario.model)
+            );
+        }
+        println!();
+
+        println!("Usage:");
+        println!("  genai-benchmark run {}  # Run this scenario", name);
+
+        return Ok(());
+    }
+
+    // Fall back to legacy scenario
     let yaml_content = get_embedded_scenario(name).ok_or_else(|| {
         anyhow!(
             "Unknown scenario: '{}'. Use 'list' to see available scenarios.",
@@ -282,7 +437,7 @@ fn describe_scenario(name: &str) -> Result<()> {
 
     let scenario: Scenario = serde_yaml::from_str(yaml_content)?;
 
-    println!("Scenario: {}", name);
+    println!("Scenario: {} (Legacy)", name);
     println!("Name: {}", scenario.name);
     if let Some(desc) = &scenario.description {
         println!("Description: {}", desc);
@@ -343,16 +498,24 @@ fn extract_env_vars(yaml_content: &str) -> Vec<String> {
 }
 
 fn list_scenarios() -> Result<()> {
-    println!("Available embedded scenarios:");
+    println!("Available embedded LEGACY scenarios:");
     for scenario in list_embedded_scenarios() {
         println!("  - {}", scenario);
     }
     println!();
+
+    println!("Available embedded MULTI-PHASE scenarios:");
+    for scenario in list_embedded_multi_phase_scenarios() {
+        println!("  - {}", scenario);
+    }
+    println!();
+
     println!("Usage:");
     println!("  genai-benchmark describe <scenario-name>  # Show details and required env vars");
     println!("  genai-benchmark run <scenario-name>       # Run an embedded scenario");
     println!("  genai-benchmark export <scenario-name>    # Export scenario to file");
-    println!("  genai-benchmark scenario <path>           # Run a custom YAML file");
+    println!("  genai-benchmark scenario <path>           # Run a custom YAML scenario file");
+    println!("  genai-benchmark multi-phase-scenario <path>  # Run a custom multi-phase scenario file");
     Ok(())
 }
 

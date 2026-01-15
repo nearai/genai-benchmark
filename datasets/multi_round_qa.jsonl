@@ -1,0 +1,8 @@
+{"user_id": "user_1", "round": 1, "question": "What is machine learning?", "system_prompt": "You are a helpful AI assistant."}
+{"user_id": "user_1", "round": 2, "question": "How does machine learning differ from deep learning?", "system_prompt": "You are a helpful AI assistant."}
+{"user_id": "user_1", "round": 3, "question": "What are neural networks?", "system_prompt": "You are a helpful AI assistant."}
+{"user_id": "user_2", "round": 1, "question": "Explain the concept of supervised learning.", "system_prompt": "You are a helpful AI assistant."}
+{"user_id": "user_2", "round": 2, "question": "What is unsupervised learning?", "system_prompt": "You are a helpful AI assistant."}
+{"user_id": "user_2", "round": 3, "question": "How do decision trees work?", "system_prompt": "You are a helpful AI assistant."}
+{"user_id": "user_3", "round": 1, "question": "What is reinforcement learning?", "system_prompt": "You are a helpful AI assistant."}
+{"user_id": "user_3", "round": 2, "question": "Explain the difference between Q-learning and policy gradient methods.", "system_prompt": "You are a helpful AI assistant."}
