@@ -1,0 +1,21 @@
+name: "Image Generation Stress Test"
+description: "High-concurrency stress test to find maximum throughput"
+model: "Qwen/Qwen-Image-2512"
+providers:
+  - name: "near"
+    base_url: "${NEARAI_BASE_URL:-https://cloud-api.near.ai/v1}"
+    api_key: "${NEARAI_API_KEY}"
+    verify: true
+dataset:
+  type: synthetic
+  seed: 42
+num_requests: 256
+concurrency: 16  # High concurrency to saturate model
+rps: 16          # Aggressive rate
+max_tokens: 1
+timeout_secs: 600
+request_type: image_generation
+image_config:
+  size: "1024x1024"
+  n: 1
+  response_format: "b64_json"

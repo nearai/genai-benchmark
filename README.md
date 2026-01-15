@@ -95,10 +95,33 @@ genai-benchmark run image-generation
 genai-benchmark --base-url https://cloud-api.near.ai/v1 --model Qwen/Qwen-Image-2512 --image-generation --image-size 1024x1024 --verify
 ```
 
+#### Image Generation Performance Scenarios
+
+Multiple scenarios are provided to test different aspects of image generation throughput:
+
+```bash
+# Quick test (5 images, basic metrics)
+genai-benchmark run image-generation
+
+# High-throughput stress test (100 images, high concurrency)
+genai-benchmark run image-generation-stress
+
+# Sustained load test (200 images over extended period)
+genai-benchmark run image-generation-sustained
+
+# Smaller images for performance comparison (512x512)
+genai-benchmark run image-generation-512
+
+# Batch generation (4 images per request)
+genai-benchmark run image-generation-batch
+```
+
 Image generation metrics include:
 - Total images generated
 - Total/average image data size
 - Mean and P95 generation time
+- Images per second (throughput)
+- Data throughput (MB/s)
 - TEE signature verification status
 
 ## Installation

@@ -13,6 +13,16 @@ const SCENARIO_LOW_CONCURRENCY: &str = include_str!("../../scenarios/low_concurr
 const SCENARIO_SINGLE_PROVIDER: &str = include_str!("../../scenarios/single_provider.yaml");
 const SCENARIO_AUDIO_INPUT: &str = include_str!("../../scenarios/audio_input.yaml");
 const SCENARIO_IMAGE_GENERATION: &str = include_str!("../../scenarios/image_generation.yaml");
+const SCENARIO_IMAGE_GENERATION_STRESS: &str =
+    include_str!("../../scenarios/image-generation-stress.yaml");
+const SCENARIO_IMAGE_GENERATION_SUSTAINED: &str =
+    include_str!("../../scenarios/image-generation-sustained.yaml");
+const SCENARIO_IMAGE_GENERATION_512: &str =
+    include_str!("../../scenarios/image-generation-512.yaml");
+const SCENARIO_IMAGE_GENERATION_BATCH: &str =
+    include_str!("../../scenarios/image-generation-batch.yaml");
+const SCENARIO_AUDIO_OUTPUT_STRESS: &str =
+    include_str!("../../scenarios/audio-output-stress.yaml");
 const SCENARIO_MULTIMODAL: &str = include_str!("../../scenarios/multimodal.yaml");
 
 fn get_embedded_scenario(name: &str) -> Option<&'static str> {
@@ -22,6 +32,11 @@ fn get_embedded_scenario(name: &str) -> Option<&'static str> {
         "single-provider" => Some(SCENARIO_SINGLE_PROVIDER),
         "audio-input" => Some(SCENARIO_AUDIO_INPUT),
         "image-generation" => Some(SCENARIO_IMAGE_GENERATION),
+        "image-generation-stress" => Some(SCENARIO_IMAGE_GENERATION_STRESS),
+        "image-generation-sustained" => Some(SCENARIO_IMAGE_GENERATION_SUSTAINED),
+        "image-generation-512" => Some(SCENARIO_IMAGE_GENERATION_512),
+        "image-generation-batch" => Some(SCENARIO_IMAGE_GENERATION_BATCH),
+        "audio-output-stress" => Some(SCENARIO_AUDIO_OUTPUT_STRESS),
         "multimodal" => Some(SCENARIO_MULTIMODAL),
         _ => None,
     }
@@ -33,8 +48,12 @@ fn list_embedded_scenarios() -> Vec<&'static str> {
         "low-concurrency",
         "single-provider",
         "audio-input",
-        "audio-output",
+        "audio-output-stress",
         "image-generation",
+        "image-generation-stress",
+        "image-generation-sustained",
+        "image-generation-512",
+        "image-generation-batch",
         "multimodal",
     ]
 }

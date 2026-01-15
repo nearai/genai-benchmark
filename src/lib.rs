@@ -644,6 +644,7 @@ struct ChatCompletionChunk {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct ChunkChoice {
     delta: Option<Delta>,
     /// For non-streaming audio responses
@@ -662,6 +663,7 @@ struct Delta {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct ChunkMessage {
     role: Option<String>,
     content: Option<String>,
@@ -672,6 +674,7 @@ struct ChunkMessage {
 
 /// Audio output data from Qwen3-Omni and similar models
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 struct AudioOutput {
     /// Base64-encoded audio data
     pub data: String,
@@ -715,6 +718,7 @@ struct ImageGenerationRequest {
 
 /// Image generation response
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct ImageGenerationResponse {
     /// Response ID for signature verification
     #[serde(default)]
@@ -725,6 +729,7 @@ struct ImageGenerationResponse {
 
 /// Individual generated image in response
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct ImageDataResponse {
     /// Base64-encoded image data
     #[serde(default)]
@@ -1498,12 +1503,14 @@ pub async fn run_benchmark(
     progress.set_style(
         ProgressStyle::default_bar()
             .template(
-                "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({per_sec})",
+                "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({per_sec}, ETA {eta}) {msg}",
             )?
             .progress_chars("#>-"),
     );
 
     let active_requests = Arc::new(AtomicUsize::new(0));
+    let success_count = Arc::new(AtomicUsize::new(0));
+    let failed_count = Arc::new(AtomicUsize::new(0));
     let start_time = Instant::now();
 
     let request_delay = if config.rps > 0.0 {
@@ -1535,6 +1542,38 @@ pub async fn run_benchmark(
 
     let mut handles = Vec::new();
 
+    // Spawn background task to update progress message with live stats
+    let progress_updater = progress.clone();
+    let active_for_display = active_requests.clone();
+    let success_for_display = success_count.clone();
+    let failed_for_display = failed_count.clone();
+    let max_concurrency = config.concurrency;
+    let rps_limit = config.rps;
+
+    tokio::spawn(async move {
+        loop {
+            let active = active_for_display.load(Ordering::Relaxed);
+            let ok = success_for_display.load(Ordering::Relaxed);
+            let err = failed_for_display.load(Ordering::Relaxed);
+
+            let rps_str = if rps_limit > 0.0 {
+                format!(" | rps: {}", rps_limit)
+            } else {
+                String::new()
+            };
+
+            progress_updater.set_message(format!(
+                "| {}/{} active | {} ok, {} err{}",
+                active, max_concurrency, ok, err, rps_str
+            ));
+
+            if progress_updater.is_finished() {
+                break;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+    });
+
     // Pre-generate test audio if needed (just base64, not data URL)
     let test_audio_base64 = if config.audio_input.is_some() {
         Some(generate_test_audio_base64())
@@ -1548,6 +1587,8 @@ pub async fn run_benchmark(
         let tx = tx.clone();
         let progress = progress.clone();
         let active = active_requests.clone();
+        let success = success_count.clone();
+        let failed = failed_count.clone();
 
         let mut messages = prompts[prompt_indices[i]].clone();
 
@@ -1644,9 +1685,15 @@ pub async fn run_benchmark(
 
             match result {
                 Ok(metrics) => {
+                    if metrics.success {
+                        success.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        failed.fetch_add(1, Ordering::Relaxed);
+                    }
                     let _ = tx.send(metrics).await;
                 }
                 Err(e) => {
+                    failed.fetch_add(1, Ordering::Relaxed);
                     error!("Request failed: {}", e);
                     let _ = tx
                         .send(RequestMetrics {
