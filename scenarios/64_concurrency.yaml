@@ -1,20 +1,21 @@
-# Compare DeepSeek V3.1: With LMCache vs Without LMCache
-name: "LMCache Performance Comparison - 64 Concurrency"
-description: "High concurrency benchmark comparing DeepSeek V3.1 with LMCache (160.72.54.251) vs without LMCache (160.72.54.241)"
+# Compare DeepSeek V3.1 across providers
+name: "DeepSeek V3.1 Provider Comparison"
+description: "DeepSeek V3.1 performance comparison: NEAR AI vs Direct Server vs AWS Bedrock"
 
 # Default model (can be overridden per provider)
 model: "deepseek-ai/DeepSeek-V3.1"
 
 providers:
-  - name: "without-lmcache"
-    base_url: "http://160.72.54.241:8000/v1"
+  - name: "near"
+    base_url: "https://cloud-api.near.ai/v1"
     api_key: "${NEARAI_API_KEY}"
+    verify: true
     # Uses default model: deepseek-ai/DeepSeek-V3.1
 
-  - name: "with-lmcache"
-    base_url: "http://160.72.54.251:8000/v1"
-    api_key: "${NEARAI_API_KEY}"
-    # Uses default model: deepseek-ai/DeepSeek-V3.1
+  - name: "bedrock"
+    base_url: "https://bedrock-runtime.us-west-2.amazonaws.com/openai/v1"
+    api_key: "${AWS_BEARER_TOKEN_BEDROCK}"
+    model: "deepseek.v3-v1:0"  # Bedrock-specific model name
 
 dataset:
   type: sharegpt
