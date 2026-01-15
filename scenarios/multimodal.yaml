@@ -1,0 +1,20 @@
+name: "Multimodal Benchmark"
+description: "Test audio input + output with Qwen3-Omni model using full attestation verification"
+model: "Qwen/Qwen3-Omni-30B-A3B-Instruct"
+providers:
+  - name: "near"
+    base_url: "${NEARAI_BASE_URL:-https://cloud-api.near.ai/v1}"
+    api_key: "${NEARAI_API_KEY}"
+    verify: true
+dataset:
+  type: synthetic
+  seed: 42
+num_requests: 10
+concurrency: 5
+rps: 2
+max_tokens: 256
+timeout_secs: 180
+request_type: chat_completion
+audio_input:
+  use_test_audio: true
+audio_output: true

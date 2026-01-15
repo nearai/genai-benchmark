@@ -7,6 +7,8 @@ A high-performance load testing tool for OpenAI-compatible LLM APIs, written in 
 - **OpenAI-compatible API support**: Works with any OpenAI-compatible endpoint (vLLM, TGI, Ollama, etc.)
 - **Streaming metrics**: Measures Time to First Token (TTFT), Inter-token Latency (ITL), and Time per Output Token (TPOT)
 - **TEE signature verification**: Verify chat completions come from genuine Trusted Execution Environments (TEE) with signature verification and latency tracking
+- **Audio input/output testing**: Test multimodal models with audio input (transcription) and audio output (TTS)
+- **Image generation testing**: Benchmark image generation endpoints with metrics tracking
 - **Built-in scenarios**: Pre-configured benchmarks included in the binary
 - **Provider comparison**: Test the same model across multiple providers and compare results
 - **Detailed statistics**: P50, P90, P95, P99, P100 percentiles for all metrics
@@ -56,6 +58,48 @@ When enabled, the benchmark will:
 - Include verification time in the total request duration metrics
 
 The verification results are displayed in the benchmark output with separate latency statistics.
+
+### Audio Input/Output Testing
+
+Test multimodal models like Qwen3-Omni with audio:
+
+```bash
+# Test audio input (transcription)
+genai-benchmark run audio-input
+
+# Test audio output (text-to-speech)
+genai-benchmark run audio-output
+
+# Test both audio input and output
+genai-benchmark run multimodal
+```
+
+Or use CLI flags:
+```bash
+# Add test audio to chat requests
+genai-benchmark --base-url https://cloud-api.near.ai/v1 --model Qwen/Qwen3-Omni-30B-A3B-Instruct --audio-input --verify
+
+# Enable audio output (sets modalities: ["text", "audio"])
+genai-benchmark --base-url https://cloud-api.near.ai/v1 --model Qwen/Qwen3-Omni-30B-A3B-Instruct --audio-output --verify
+```
+
+### Image Generation Testing
+
+Benchmark image generation endpoints:
+
+```bash
+# Run the built-in image generation scenario
+genai-benchmark run image-generation
+
+# Or use CLI flags
+genai-benchmark --base-url https://cloud-api.near.ai/v1 --model Qwen/Qwen-Image-2512 --image-generation --image-size 1024x1024 --verify
+```
+
+Image generation metrics include:
+- Total images generated
+- Total/average image data size
+- Mean and P95 generation time
+- TEE signature verification status
 
 ## Installation
 

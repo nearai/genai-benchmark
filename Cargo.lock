@@ -496,6 +496,7 @@ version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-channel",
+ "base64",
  "chrono",
  "clap",
  "csv",

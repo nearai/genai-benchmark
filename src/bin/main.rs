@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use genai_benchmark::{
     expand_scenario_env_vars, generate_output_filename, load_dataset, load_scenario_from_file,
     print_comparison, print_result, run_benchmark, run_scenario, save_results_to_file,
-    BenchmarkConfig, DatasetConfig, Scenario,
+    AudioInputConfig, BenchmarkConfig, DatasetConfig, ImageGenerationConfig, RequestType, Scenario,
 };
 use tracing::info;
 
@@ -11,18 +11,32 @@ use tracing::info;
 const SCENARIO_NEAR_VS_BEDROCK: &str = include_str!("../../scenarios/near_vs_bedrock.yaml");
 const SCENARIO_LOW_CONCURRENCY: &str = include_str!("../../scenarios/low_concurrency.yaml");
 const SCENARIO_SINGLE_PROVIDER: &str = include_str!("../../scenarios/single_provider.yaml");
+const SCENARIO_AUDIO_INPUT: &str = include_str!("../../scenarios/audio_input.yaml");
+const SCENARIO_IMAGE_GENERATION: &str = include_str!("../../scenarios/image_generation.yaml");
+const SCENARIO_MULTIMODAL: &str = include_str!("../../scenarios/multimodal.yaml");
 
 fn get_embedded_scenario(name: &str) -> Option<&'static str> {
     match name {
         "near-vs-bedrock" => Some(SCENARIO_NEAR_VS_BEDROCK),
         "low-concurrency" => Some(SCENARIO_LOW_CONCURRENCY),
         "single-provider" => Some(SCENARIO_SINGLE_PROVIDER),
+        "audio-input" => Some(SCENARIO_AUDIO_INPUT),
+        "image-generation" => Some(SCENARIO_IMAGE_GENERATION),
+        "multimodal" => Some(SCENARIO_MULTIMODAL),
         _ => None,
     }
 }
 
 fn list_embedded_scenarios() -> Vec<&'static str> {
-    vec!["near-vs-bedrock", "low-concurrency", "single-provider"]
+    vec![
+        "near-vs-bedrock",
+        "low-concurrency",
+        "single-provider",
+        "audio-input",
+        "audio-output",
+        "image-generation",
+        "multimodal",
+    ]
 }
 
 #[derive(Parser, Debug)]
@@ -101,6 +115,34 @@ struct Args {
     /// Skip first N conversations from dataset
     #[arg(long, default_value = "0", global = true)]
     skip: usize,
+
+    /// Enable audio input testing (adds test audio to requests)
+    #[arg(long, global = true)]
+    audio_input: bool,
+
+    /// Enable audio output testing (sets modalities to include "audio")
+    #[arg(long, global = true)]
+    audio_output: bool,
+
+    /// Enable image generation testing instead of chat completion
+    #[arg(long, global = true)]
+    image_generation: bool,
+
+    /// Image size for image generation (e.g., "1024x1024", "512x512")
+    #[arg(long, default_value = "1024x1024", global = true)]
+    image_size: String,
+
+    /// Number of images to generate per request
+    #[arg(long, default_value = "1", global = true)]
+    image_n: u32,
+
+    /// Image quality ("standard" or "hd")
+    #[arg(long, global = true)]
+    image_quality: Option<String>,
+
+    /// Enable TEE signature verification
+    #[arg(long, global = true)]
+    verify: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -378,6 +420,31 @@ async fn run_single_benchmark(args: &Args) -> Result<()> {
 
     info!("Loaded {} prompts, starting benchmark...", prompts.len());
 
+    // Determine request type and configuration
+    let request_type = if args.image_generation {
+        RequestType::ImageGeneration
+    } else {
+        RequestType::ChatCompletion
+    };
+
+    let image_config = if args.image_generation {
+        Some(ImageGenerationConfig {
+            size: args.image_size.clone(),
+            n: args.image_n,
+            response_format: "b64_json".to_string(),
+            quality: args.image_quality.clone(),
+            style: None,
+        })
+    } else {
+        None
+    };
+
+    let audio_input = if args.audio_input {
+        Some(AudioInputConfig::default())
+    } else {
+        None
+    };
+
     let config = BenchmarkConfig {
         name: None,
         base_url,
@@ -388,9 +455,13 @@ async fn run_single_benchmark(args: &Args) -> Result<()> {
         rps: args.rps,
         timeout_secs: args.timeout,
         disable_prewarm: false,
-        verify: false,
+        verify: args.verify,
         random_prompt_selection: args.random_prompts,
         random_seed: args.prompt_seed,
+        request_type,
+        image_config,
+        audio_input,
+        audio_output: args.audio_output,
     };
 
     let result = run_benchmark(&config, prompts, args.num_requests).await?;

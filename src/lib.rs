@@ -29,6 +29,85 @@ fn build_http_client(concurrency: usize) -> Result<Client> {
 // Public Types
 // ============================================================================
 
+/// Type of benchmark request
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum RequestType {
+    /// Standard chat completion requests
+    #[default]
+    ChatCompletion,
+    /// Image generation requests
+    ImageGeneration,
+}
+
+/// Configuration for image generation benchmarks
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageGenerationConfig {
+    /// Image size (e.g., "1024x1024", "512x512")
+    #[serde(default = "default_image_size")]
+    pub size: String,
+    /// Number of images to generate per request
+    #[serde(default = "default_image_n")]
+    pub n: u32,
+    /// Response format: "b64_json" or "url"
+    #[serde(default = "default_image_response_format")]
+    pub response_format: String,
+    /// Image quality: "standard" or "hd"
+    #[serde(default)]
+    pub quality: Option<String>,
+    /// Image style: "vivid" or "natural"
+    #[serde(default)]
+    pub style: Option<String>,
+}
+
+fn default_image_size() -> String {
+    "1024x1024".to_string()
+}
+
+fn default_image_n() -> u32 {
+    1
+}
+
+fn default_image_response_format() -> String {
+    "b64_json".to_string()
+}
+
+impl Default for ImageGenerationConfig {
+    fn default() -> Self {
+        Self {
+            size: default_image_size(),
+            n: default_image_n(),
+            response_format: default_image_response_format(),
+            quality: None,
+            style: None,
+        }
+    }
+}
+
+/// Configuration for audio input in chat completions
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AudioInputConfig {
+    /// Base64-encoded audio data or URL
+    #[serde(default)]
+    pub audio_url: Option<String>,
+    /// Generate test audio if no URL provided
+    #[serde(default = "default_true")]
+    pub use_test_audio: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for AudioInputConfig {
+    fn default() -> Self {
+        Self {
+            audio_url: None,
+            use_test_audio: true,
+        }
+    }
+}
+
 /// Configuration for a single benchmark run
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BenchmarkConfig {
@@ -66,6 +145,18 @@ pub struct BenchmarkConfig {
     /// Random seed for prompt selection (None = use system entropy)
     #[serde(default)]
     pub random_seed: Option<u64>,
+    /// Type of request to benchmark
+    #[serde(default)]
+    pub request_type: RequestType,
+    /// Image generation configuration (when request_type is ImageGeneration)
+    #[serde(default)]
+    pub image_config: Option<ImageGenerationConfig>,
+    /// Enable audio input in chat completions
+    #[serde(default)]
+    pub audio_input: Option<AudioInputConfig>,
+    /// Enable audio output (modalities: ["audio"]) for models like Qwen3-Omni
+    #[serde(default)]
+    pub audio_output: bool,
 }
 
 fn default_max_tokens() -> u32 {
@@ -183,17 +274,150 @@ pub struct Scenario {
     /// Random seed for prompt selection (None = use system entropy)
     #[serde(default)]
     pub random_seed: Option<u64>,
+    /// Type of request to benchmark
+    #[serde(default)]
+    pub request_type: RequestType,
+    /// Image generation configuration (when request_type is ImageGeneration)
+    #[serde(default)]
+    pub image_config: Option<ImageGenerationConfig>,
+    /// Enable audio input in chat completions
+    #[serde(default)]
+    pub audio_input: Option<AudioInputConfig>,
+    /// Enable audio output (modalities: ["audio"]) for models like Qwen3-Omni
+    #[serde(default)]
+    pub audio_output: bool,
 }
 
 fn default_num_requests() -> usize {
     100
 }
 
+/// Content part for multimodal messages
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ContentPart {
+    /// Text content
+    Text { text: String },
+    /// Input audio - OpenAI format
+    InputAudio { input_audio: InputAudioData },
+    /// Audio URL - vLLM format (data URI with base64)
+    AudioUrl { audio_url: AudioUrlData },
+    /// Video URL - vLLM format (data URI with base64)
+    VideoUrl { video_url: VideoUrlData },
+    /// Image URL content (for vision models)
+    ImageUrl { image_url: ImageUrl },
+}
+
+/// Input audio data (OpenAI format)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InputAudioData {
+    /// Base64-encoded audio data
+    pub data: String,
+    /// Audio format (e.g., "wav", "mp3")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+}
+
+/// Audio URL specification (vLLM format)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum AudioUrlData {
+    String(String),
+    Object { url: String },
+}
+
+/// Video URL specification (vLLM format)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum VideoUrlData {
+    String(String),
+    Object { url: String },
+}
+
+/// Image URL specification
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageUrl {
+    /// URL or data URI
+    pub url: String,
+    /// Detail level: "auto", "low", or "high"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// Message content - can be simple string or array of content parts
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum MessageContent {
+    /// Simple text content
+    Text(String),
+    /// Multimodal content parts
+    Parts(Vec<ContentPart>),
+}
+
 /// Chat message
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub role: String,
-    pub content: String,
+    pub content: MessageContent,
+}
+
+impl Message {
+    /// Create a simple text message
+    pub fn text(role: &str, content: &str) -> Self {
+        Self {
+            role: role.to_string(),
+            content: MessageContent::Text(content.to_string()),
+        }
+    }
+
+    /// Create a message with audio URL content (vLLM format) - default for compatibility
+    pub fn with_audio_url(role: &str, text: &str, audio_base64: &str) -> Self {
+        let data_url = format!("data:audio/wav;base64,{}", audio_base64);
+        Self {
+            role: role.to_string(),
+            content: MessageContent::Parts(vec![
+                ContentPart::Text {
+                    text: text.to_string(),
+                },
+                ContentPart::AudioUrl {
+                    audio_url: AudioUrlData::String(data_url),
+                },
+            ]),
+        }
+    }
+
+    /// Create a message with input audio content (OpenAI format)
+    pub fn with_input_audio(role: &str, text: &str, audio_base64: &str) -> Self {
+        Self {
+            role: role.to_string(),
+            content: MessageContent::Parts(vec![
+                ContentPart::Text {
+                    text: text.to_string(),
+                },
+                ContentPart::InputAudio {
+                    input_audio: InputAudioData {
+                        data: audio_base64.to_string(),
+                        format: Some("wav".to_string()),
+                    },
+                },
+            ]),
+        }
+    }
+
+    /// Get text content (for preview)
+    pub fn text_content(&self) -> String {
+        match &self.content {
+            MessageContent::Text(s) => s.clone(),
+            MessageContent::Parts(parts) => parts
+                .iter()
+                .filter_map(|p| match p {
+                    ContentPart::Text { text } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(" "),
+        }
+    }
 }
 
 /// Metrics for a single request
@@ -216,6 +440,20 @@ pub struct RequestMetrics {
     pub verification_time_ms: f64,
     /// First 20 tokens of the prompt for reference
     pub prompt_preview: String,
+    /// Type of request
+    pub request_type: RequestType,
+    // Audio-specific metrics
+    /// Size of audio input in bytes (if any)
+    pub audio_input_size_bytes: Option<u64>,
+    /// Size of audio output in bytes (if any)
+    pub audio_output_size_bytes: Option<u64>,
+    /// Whether audio output was received
+    pub has_audio_output: bool,
+    // Image generation metrics
+    /// Number of images generated
+    pub image_count: u32,
+    /// Total size of generated images in bytes
+    pub total_image_size_bytes: u64,
 }
 
 impl RequestMetrics {
@@ -235,7 +473,7 @@ fn extract_prompt_preview(messages: &[Message], max_tokens: usize) -> String {
     let full_text: String = messages
         .iter()
         .filter(|m| m.role == "user")
-        .map(|m| m.content.as_str())
+        .map(|m| m.text_content())
         .collect::<Vec<_>>()
         .join(" ");
 
@@ -288,6 +526,25 @@ pub struct BenchmarkResult {
     /// Sample prompt previews (first 5 unique prompts)
     #[serde(skip)]
     pub sample_prompts: Vec<String>,
+    /// Type of benchmark request
+    pub request_type: RequestType,
+    // Audio-specific aggregate metrics
+    /// Number of requests with audio input
+    pub audio_input_requests: usize,
+    /// Number of requests with audio output
+    pub audio_output_requests: usize,
+    /// Total audio input bytes processed
+    pub total_audio_input_bytes: u64,
+    /// Total audio output bytes received
+    pub total_audio_output_bytes: u64,
+    // Image generation aggregate metrics
+    /// Total images generated
+    pub total_images_generated: u64,
+    /// Total image data size in bytes
+    pub total_image_bytes: u64,
+    /// Image generation time values (ms) for statistics
+    #[serde(skip)]
+    pub image_generation_time_values: Vec<f64>,
 }
 
 impl BenchmarkResult {
@@ -371,6 +628,9 @@ struct ChatCompletionRequest {
     // NEAR AI includes usage by default, no flag needed
     #[serde(skip_serializing_if = "Option::is_none")]
     stream_options: Option<StreamOptions>,
+    /// Output modalities (e.g., ["text"], ["audio"], or ["text", "audio"])
+    #[serde(skip_serializing_if = "Option::is_none")]
+    modalities: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -385,13 +645,39 @@ struct ChatCompletionChunk {
 
 #[derive(Debug, Deserialize)]
 struct ChunkChoice {
-    delta: Delta,
+    delta: Option<Delta>,
+    /// For non-streaming audio responses
+    message: Option<ChunkMessage>,
     finish_reason: Option<String>,
+    #[serde(default)]
+    index: u32,
 }
 
 #[derive(Debug, Deserialize)]
 struct Delta {
     content: Option<String>,
+    /// Modality indicator for streaming (e.g., "text" or "audio")
+    #[serde(default)]
+    modality: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChunkMessage {
+    role: Option<String>,
+    content: Option<String>,
+    /// Audio output data
+    #[serde(default)]
+    audio: Option<AudioOutput>,
+}
+
+/// Audio output data from Qwen3-Omni and similar models
+#[derive(Debug, Clone, Deserialize)]
+struct AudioOutput {
+    /// Base64-encoded audio data
+    pub data: String,
+    /// Audio format (e.g., "wav")
+    #[serde(default)]
+    pub format: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -410,6 +696,47 @@ struct SignatureResponse {
     signing_algo: String,
 }
 
+/// Image generation request
+#[derive(Debug, Clone, Serialize)]
+struct ImageGenerationRequest {
+    model: String,
+    prompt: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    n: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    size: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    quality: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    style: Option<String>,
+}
+
+/// Image generation response
+#[derive(Debug, Deserialize)]
+struct ImageGenerationResponse {
+    /// Response ID for signature verification
+    #[serde(default)]
+    id: Option<String>,
+    created: i64,
+    data: Vec<ImageDataResponse>,
+}
+
+/// Individual generated image in response
+#[derive(Debug, Deserialize)]
+struct ImageDataResponse {
+    /// Base64-encoded image data
+    #[serde(default)]
+    b64_json: Option<String>,
+    /// URL to the generated image
+    #[serde(default)]
+    url: Option<String>,
+    /// Revised prompt used for generation
+    #[serde(default)]
+    revised_prompt: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct ShareGPTConversation {
     #[serde(alias = "conversation", alias = "conversations")]
@@ -420,6 +747,85 @@ struct ShareGPTConversation {
 struct ShareGPTMessage {
     from: String,
     value: String,
+}
+
+// ============================================================================
+// Audio Helpers
+// ============================================================================
+
+/// Generate a minimal WAV file for testing audio input
+/// Creates a 1-second mono 8kHz silent WAV file (~8KB)
+pub fn generate_test_audio_base64() -> String {
+    // WAV file header for 8-bit mono PCM at 8000 Hz, 1 second duration
+    let sample_rate: u32 = 8000;
+    let duration_seconds: u32 = 1;
+    let bits_per_sample: u16 = 8;
+    let num_channels: u16 = 1;
+    let byte_rate: u32 = sample_rate * num_channels as u32 * bits_per_sample as u32 / 8;
+    let block_align: u16 = num_channels * bits_per_sample / 8;
+    let data_size: u32 = sample_rate * duration_seconds * num_channels as u32 * bits_per_sample as u32 / 8;
+    let file_size: u32 = 36 + data_size;
+
+    let mut wav_data = Vec::with_capacity(file_size as usize + 8);
+
+    // RIFF header
+    wav_data.extend_from_slice(b"RIFF");
+    wav_data.extend_from_slice(&file_size.to_le_bytes());
+    wav_data.extend_from_slice(b"WAVE");
+
+    // fmt chunk
+    wav_data.extend_from_slice(b"fmt ");
+    wav_data.extend_from_slice(&16u32.to_le_bytes()); // chunk size
+    wav_data.extend_from_slice(&1u16.to_le_bytes()); // audio format (PCM)
+    wav_data.extend_from_slice(&num_channels.to_le_bytes());
+    wav_data.extend_from_slice(&sample_rate.to_le_bytes());
+    wav_data.extend_from_slice(&byte_rate.to_le_bytes());
+    wav_data.extend_from_slice(&block_align.to_le_bytes());
+    wav_data.extend_from_slice(&bits_per_sample.to_le_bytes());
+
+    // data chunk
+    wav_data.extend_from_slice(b"data");
+    wav_data.extend_from_slice(&data_size.to_le_bytes());
+
+    // Silent audio data (128 is silence for 8-bit audio)
+    wav_data.extend(vec![128u8; data_size as usize]);
+
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(&wav_data)
+}
+
+/// Calculate audio data size from base64 string
+pub fn audio_base64_size_bytes(base64_audio: &str) -> u64 {
+    // Base64 encodes 3 bytes as 4 characters
+    // So decoded size is approximately (len * 3) / 4
+    (base64_audio.len() as u64 * 3) / 4
+}
+
+/// Generate test prompts for image generation
+pub fn generate_image_prompts(count: usize, seed: Option<u64>) -> Vec<String> {
+    use rand::{Rng, SeedableRng};
+
+    let mut rng = match seed {
+        Some(s) => rand::rngs::StdRng::seed_from_u64(s),
+        None => rand::rngs::StdRng::from_entropy(),
+    };
+
+    let prompts = [
+        "A futuristic cityscape at sunset with flying cars",
+        "A serene mountain landscape with a crystal clear lake",
+        "An abstract digital art piece with vibrant colors",
+        "A steampunk-style mechanical robot in a workshop",
+        "A cozy coffee shop interior with warm lighting",
+        "A space station orbiting Earth with stars in the background",
+        "A fantasy forest with glowing mushrooms and fireflies",
+        "A minimalist geometric pattern in pastel colors",
+        "A vintage retro poster design for a music festival",
+        "An underwater scene with colorful coral reef and fish",
+    ];
+
+    (0..count)
+        .map(|_| prompts[rng.gen_range(0..prompts.len())].to_string())
+        .collect()
 }
 
 // ============================================================================
@@ -488,10 +894,7 @@ pub async fn load_sharegpt_dataset(
                         "system" => "system",
                         _ => "user",
                     };
-                    Message {
-                        role: role.to_string(),
-                        content: m.value.clone(),
-                    }
+                    Message::text(role, &m.value)
                 })
                 .collect();
 
@@ -523,12 +926,7 @@ pub async fn load_prompts_file(path: &str, skip: usize, limit: usize) -> Result<
         .filter(|l| !l.trim().is_empty())
         .skip(skip)
         .take(limit)
-        .map(|line| {
-            vec![Message {
-                role: "user".to_string(),
-                content: line.to_string(),
-            }]
-        })
+        .map(|line| vec![Message::text("user", line)])
         .collect();
 
     info!("Loaded {} prompts", prompts.len());
@@ -559,10 +957,7 @@ pub fn generate_synthetic_prompts(count: usize, seed: Option<u64>) -> Vec<Vec<Me
     (0..count)
         .map(|_| {
             let topic = topics[rng.gen_range(0..topics.len())];
-            vec![Message {
-                role: "user".to_string(),
-                content: topic.to_string(),
-            }]
+            vec![Message::text("user", topic)]
         })
         .collect()
 }
@@ -643,7 +1038,7 @@ pub async fn load_dataset(
 // API Client
 // ============================================================================
 
-/// Fetch TEE signature for a chat completion
+/// Fetch TEE signature for a chat completion with retry logic
 async fn fetch_tee_signature(
     client: &Client,
     base_url: &str,
@@ -651,31 +1046,185 @@ async fn fetch_tee_signature(
     chat_id: &str,
 ) -> Result<SignatureResponse> {
     let url = format!("{}/signature/{}", base_url.trim_end_matches('/'), chat_id);
+    
+    // Retry up to 3 times with exponential backoff
+    const MAX_RETRIES: u32 = 3;
+    let mut last_error = None;
+    
+    for attempt in 0..MAX_RETRIES {
+        if attempt > 0 {
+            let delay_ms = 500 * (1 << (attempt - 1)); // 500ms, 1000ms
+            debug!("Retrying signature fetch (attempt {}/{}) after {}ms", attempt + 1, MAX_RETRIES, delay_ms);
+            sleep(Duration::from_millis(delay_ms)).await;
+        }
+        
+        let mut req_builder = client.get(&url);
 
-    let mut req_builder = client.get(&url);
+        if !api_key.is_empty() {
+            req_builder = req_builder.header("Authorization", format!("Bearer {}", api_key));
+        }
+
+        let response = match req_builder.send().await {
+            Ok(r) => r,
+            Err(e) => {
+                last_error = Some(anyhow!("Request error: {}", e));
+                continue;
+            }
+        };
+
+        if !response.status().is_success() {
+            if response.status().as_u16() == 404 && attempt < MAX_RETRIES - 1 {
+                // 404 might mean signature not cached yet, retry
+                last_error = Some(anyhow!("Signature not found (404), retrying..."));
+                continue;
+            }
+            last_error = Some(anyhow!(
+                "TEE signature request failed with status: {}",
+                response.status()
+            ));
+            continue;
+        }
+
+        let signature: SignatureResponse = match response.json().await {
+            Ok(s) => s,
+            Err(e) => {
+                last_error = Some(anyhow!("Failed to parse response: {}", e));
+                continue;
+            }
+        };
+
+        return Ok(signature);
+    }
+
+    Err(last_error.unwrap_or_else(|| anyhow!("Failed to fetch TEE signature after {} retries", MAX_RETRIES)))
+}
+
+/// Send an image generation request and collect metrics
+async fn send_image_generation_request(
+    client: &Client,
+    base_url: &str,
+    api_key: &str,
+    prompt: &str,
+    config: &ImageGenerationConfig,
+    model: &str,
+    timeout: Duration,
+    verify: bool,
+) -> Result<RequestMetrics> {
+    let url = format!("{}/images/generations", base_url.trim_end_matches('/'));
+    let start_time = Instant::now();
+
+    let request = ImageGenerationRequest {
+        model: model.to_string(),
+        prompt: prompt.to_string(),
+        n: Some(config.n),
+        size: Some(config.size.clone()),
+        response_format: Some(config.response_format.clone()),
+        quality: config.quality.clone(),
+        style: config.style.clone(),
+    };
+
+    let mut req_builder = client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .timeout(timeout);
 
     if !api_key.is_empty() {
         req_builder = req_builder.header("Authorization", format!("Bearer {}", api_key));
     }
 
     let response = req_builder
+        .json(&request)
         .send()
         .await
-        .context("Failed to fetch TEE signature")?;
+        .context("Failed to send image generation request")?;
 
     if !response.status().is_success() {
         return Err(anyhow!(
-            "TEE signature request failed with status: {}",
+            "Image generation request failed with status: {}",
             response.status()
         ));
     }
 
-    let signature: SignatureResponse = response
+    let image_response: ImageGenerationResponse = response
         .json()
         .await
-        .context("Failed to parse TEE signature response")?;
+        .context("Failed to parse image generation response")?;
 
-    Ok(signature)
+    let total_time = start_time.elapsed();
+
+    // Calculate total image size
+    let mut total_image_size_bytes: u64 = 0;
+    let image_count = image_response.data.len() as u32;
+
+    for img in &image_response.data {
+        if let Some(b64) = &img.b64_json {
+            // Base64 decodes to approximately (len * 3) / 4 bytes
+            total_image_size_bytes += (b64.len() as u64 * 3) / 4;
+        }
+    }
+
+    // TEE signature verification for image generation
+    let (verification_attempted, verification_success, verification_time_ms) = if verify {
+        if let Some(id) = &image_response.id {
+            // Wait for signature to be cached by vLLM-proxy
+            sleep(Duration::from_millis(1000)).await;
+            
+            debug!("Verifying TEE signature for image ID: {}", id);
+            let verify_start = Instant::now();
+            match fetch_tee_signature(client, base_url, api_key, id).await {
+                Ok(sig) => {
+                    let verify_time = verify_start.elapsed().as_secs_f64() * 1000.0;
+                    debug!(
+                        "TEE signature verified in {:.2}ms: signing_address={}, algo={}",
+                        verify_time, sig.signing_address, sig.signing_algo
+                    );
+                    (true, true, verify_time)
+                }
+                Err(e) => {
+                    let verify_time = verify_start.elapsed().as_secs_f64() * 1000.0;
+                    warn!(
+                        "TEE signature verification failed for {} in {:.2}ms: {}",
+                        id, verify_time, e
+                    );
+                    (true, false, verify_time)
+                }
+            }
+        } else {
+            warn!("Cannot verify TEE signature: no image ID received");
+            (true, false, 0.0)
+        }
+    } else {
+        (false, false, 0.0)
+    };
+
+    // Truncate prompt for preview
+    let prompt_preview = if prompt.len() > 100 {
+        format!("{}...", &prompt[..100])
+    } else {
+        prompt.to_string()
+    };
+
+    Ok(RequestMetrics {
+        success: true,
+        input_tokens: 0,
+        output_tokens: 0,
+        output_chars: 0,
+        chunk_count: 0,
+        got_usage: false,
+        ttft_ms: total_time.as_secs_f64() * 1000.0, // Use total time as TTFT for images
+        total_time_ms: total_time.as_secs_f64() * 1000.0,
+        inter_chunk_latencies: Vec::new(),
+        verification_attempted,
+        verification_success,
+        verification_time_ms,
+        prompt_preview,
+        request_type: RequestType::ImageGeneration,
+        audio_input_size_bytes: None,
+        audio_output_size_bytes: None,
+        has_audio_output: false,
+        image_count,
+        total_image_size_bytes,
+    })
 }
 
 async fn send_streaming_request(
@@ -686,6 +1235,8 @@ async fn send_streaming_request(
     timeout: Duration,
     verify: bool,
     prompt_preview: String,
+    audio_input_size: Option<u64>,
+    request_type: RequestType,
 ) -> Result<RequestMetrics> {
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let start_time = Instant::now();
@@ -712,6 +1263,10 @@ async fn send_streaming_request(
     let mut chunk_count: u32 = 0;
     let mut got_usage: bool = false;
     let mut chat_id: Option<String> = None;
+    // Audio tracking
+    let audio_input_size_bytes: Option<u64> = audio_input_size;
+    let mut audio_output_size_bytes: Option<u64> = None;
+    let mut has_audio_output: bool = false;
 
     while let Some(event) = es.next().await {
         match event {
@@ -736,45 +1291,72 @@ async fn send_streaming_request(
                             }
                         }
 
-                        // Check for usage stats first (may come in final chunk with empty choices)
+                        // Check for usage stats (may come multiple times, always use latest)
                         if let Some(usage) = &chunk.usage {
+                            let previous_output = output_tokens;
                             input_tokens = usage.prompt_tokens;
                             output_tokens = usage.completion_tokens;
                             got_usage = true;
                             debug!(
-                                "Got usage stats: input={}, output={}",
-                                input_tokens, output_tokens
+                                "Got usage stats: input={}, output={} (previous: {}), chunk_count={}",
+                                input_tokens, output_tokens, previous_output, chunk_count
                             );
                         }
 
                         // Process content from choices
                         if let Some(choice) = chunk.choices.first() {
-                            if let Some(content) = &choice.delta.content {
-                                if !content.is_empty() {
-                                    output_chars += content.len();
+                            // Handle streaming delta content
+                            if let Some(delta) = &choice.delta {
+                                if let Some(content) = &delta.content {
+                                    if !content.is_empty() {
+                                        output_chars += content.len();
 
-                                    if first_token_time.is_none() {
-                                        first_token_time = Some(now);
-                                    } else {
-                                        let icl = now.duration_since(last_chunk_time).as_secs_f64()
-                                            * 1000.0;
-                                        inter_chunk_latencies.push(icl);
+                                        if first_token_time.is_none() {
+                                            first_token_time = Some(now);
+                                        } else {
+                                            let icl = now.duration_since(last_chunk_time).as_secs_f64()
+                                                * 1000.0;
+                                            inter_chunk_latencies.push(icl);
+                                        }
+                                        last_chunk_time = now;
+
+                                        // Count chunks with content as fallback
+                                        // (will be overridden by usage if available)
+                                        if !got_usage {
+                                            output_tokens += 1;
+                                        }
                                     }
-                                    last_chunk_time = now;
-
-                                    // Count chunks with content as fallback
-                                    // (will be overridden by usage if available)
-                                    if !got_usage {
-                                        output_tokens += 1;
+                                }
+                                
+                                // Track audio modality if present
+                                if let Some(modality) = &delta.modality {
+                                    if modality == "audio" {
+                                        debug!("Received audio modality chunk");
                                     }
                                 }
                             }
 
-                            // Only break on finish_reason if we already got usage
-                            // Some APIs send usage in a separate final chunk
-                            if choice.finish_reason.is_some() && got_usage {
-                                break;
+                            // Handle non-streaming message (for audio responses)
+                            if let Some(message) = &choice.message {
+                                // Check for audio output
+                                if let Some(audio) = &message.audio {
+                                    has_audio_output = true;
+                                    audio_output_size_bytes = Some(audio.data.len() as u64);
+                                    debug!("Got audio output: {} bytes", audio.data.len());
+                                }
+                                // Check for text content in message
+                                if let Some(content) = &message.content {
+                                    if !content.is_empty() {
+                                        output_chars += content.len();
+                                        if first_token_time.is_none() {
+                                            first_token_time = Some(now);
+                                        }
+                                    }
+                                }
                             }
+
+                            // Don't break early - some models (like Qwen3-Omni) send usage updates
+                            // in later chunks after finish_reason. Wait for [DONE] instead.
                         }
                     }
                     Err(e) => {
@@ -802,6 +1384,9 @@ async fn send_streaming_request(
     // TEE signature verification
     let (verification_attempted, verification_success, verification_time_ms) = if verify {
         if let Some(id) = &chat_id {
+            // Wait for signature to be cached by vLLM-proxy (signatures are stored after stream completes)
+            sleep(Duration::from_millis(1000)).await;
+            
             debug!("Verifying TEE signature for chat ID: {}", id);
             let verify_start = Instant::now();
             match fetch_tee_signature(client, base_url, api_key, id).await {
@@ -850,6 +1435,12 @@ async fn send_streaming_request(
         verification_success,
         verification_time_ms,
         prompt_preview,
+        request_type,
+        audio_input_size_bytes,
+        audio_output_size_bytes,
+        has_audio_output,
+        image_count: 0,
+        total_image_size_bytes: 0,
     })
 }
 
@@ -944,6 +1535,13 @@ pub async fn run_benchmark(
 
     let mut handles = Vec::new();
 
+    // Pre-generate test audio if needed (just base64, not data URL)
+    let test_audio_base64 = if config.audio_input.is_some() {
+        Some(generate_test_audio_base64())
+    } else {
+        None
+    };
+
     for i in 0..num_requests {
         let permit = semaphore.clone().acquire_owned().await?;
         let client = client.clone();
@@ -951,7 +1549,21 @@ pub async fn run_benchmark(
         let progress = progress.clone();
         let active = active_requests.clone();
 
-        let messages = prompts[prompt_indices[i]].clone();
+        let mut messages = prompts[prompt_indices[i]].clone();
+
+        // Calculate audio input size if adding audio
+        let audio_input_size = if let Some(audio_base64) = &test_audio_base64 {
+            // Add audio content to the last user message
+            // Use audio_url format for vLLM compatibility
+            if let Some(last_user_msg) = messages.iter_mut().rev().find(|m| m.role == "user") {
+                let text_content = last_user_msg.text_content();
+                *last_user_msg = Message::with_audio_url("user", &text_content, audio_base64);
+            }
+            Some(audio_base64_size_bytes(audio_base64))
+        } else {
+            None
+        };
+
         let prompt_preview = extract_prompt_preview(&messages, 20);
         let config_base_url = config.base_url.clone();
         let config_api_key = config.api_key.clone();
@@ -959,32 +1571,72 @@ pub async fn run_benchmark(
         let config_max_tokens = config.max_tokens;
         let config_timeout = config.timeout();
         let config_verify = config.verify;
+        let config_audio_output = config.audio_output;
+        let config_request_type = config.request_type.clone();
+        let config_image_config = config.image_config.clone();
 
         active.fetch_add(1, Ordering::SeqCst);
 
         let handle = tokio::spawn(async move {
-            let request = ChatCompletionRequest {
-                model: config_model,
-                messages,
-                max_tokens: config_max_tokens,
-                stream: true,
-                temperature: Some(0.7),
-                // Request usage stats (NEAR AI includes by default, Bedrock needs this)
-                stream_options: Some(StreamOptions {
-                    include_usage: true,
-                }),
-            };
+            let result = match config_request_type {
+                RequestType::ImageGeneration => {
+                    // For image generation, extract text prompt from messages
+                    let text_prompt = messages
+                        .iter()
+                        .filter(|m| m.role == "user")
+                        .map(|m| m.text_content())
+                        .collect::<Vec<_>>()
+                        .join(" ");
 
-            let result = send_streaming_request(
-                &client,
-                &config_base_url,
-                &config_api_key,
-                request,
-                config_timeout,
-                config_verify,
-                prompt_preview.clone(),
-            )
-            .await;
+                    let img_config = config_image_config.unwrap_or_default();
+
+                    send_image_generation_request(
+                        &client,
+                        &config_base_url,
+                        &config_api_key,
+                        &text_prompt,
+                        &img_config,
+                        &config_model,
+                        config_timeout,
+                        config_verify,
+                    )
+                    .await
+                }
+                RequestType::ChatCompletion => {
+                    // Set modalities for audio output if requested
+                    let modalities = if config_audio_output {
+                        Some(vec!["text".to_string(), "audio".to_string()])
+                    } else {
+                        None
+                    };
+
+                    let request = ChatCompletionRequest {
+                        model: config_model,
+                        messages,
+                        max_tokens: config_max_tokens,
+                        stream: true,
+                        temperature: Some(0.7),
+                        // Request usage stats (NEAR AI includes by default, Bedrock needs this)
+                        stream_options: Some(StreamOptions {
+                            include_usage: true,
+                        }),
+                        modalities,
+                    };
+
+                    send_streaming_request(
+                        &client,
+                        &config_base_url,
+                        &config_api_key,
+                        request,
+                        config_timeout,
+                        config_verify,
+                        prompt_preview.clone(),
+                        audio_input_size,
+                        RequestType::ChatCompletion,
+                    )
+                    .await
+                }
+            };
 
             active.fetch_sub(1, Ordering::SeqCst);
             progress.inc(1);
@@ -1011,6 +1663,12 @@ pub async fn run_benchmark(
                             verification_success: false,
                             verification_time_ms: 0.0,
                             prompt_preview,
+                            request_type: config_request_type,
+                            audio_input_size_bytes: None,
+                            audio_output_size_bytes: None,
+                            has_audio_output: false,
+                            image_count: 0,
+                            total_image_size_bytes: 0,
                         })
                         .await;
                 }
@@ -1050,6 +1708,14 @@ pub async fn run_benchmark(
     let mut tokens_per_request: Vec<u32> = Vec::new();
     let mut verification_time_values: Vec<f64> = Vec::new();
     let mut sample_prompts: Vec<String> = Vec::new();
+    // Audio/image metrics
+    let mut audio_input_requests = 0;
+    let mut audio_output_requests = 0;
+    let mut total_audio_input_bytes: u64 = 0;
+    let mut total_audio_output_bytes: u64 = 0;
+    let mut total_images_generated: u64 = 0;
+    let mut total_image_bytes: u64 = 0;
+    let mut image_generation_time_values: Vec<f64> = Vec::new();
 
     while let Ok(metrics) = rx.recv().await {
         if metrics.success {
@@ -1085,6 +1751,25 @@ pub async fn run_benchmark(
             }
 
             itl_values.extend(metrics.inter_chunk_latencies);
+
+            // Track audio metrics
+            if let Some(audio_in) = metrics.audio_input_size_bytes {
+                audio_input_requests += 1;
+                total_audio_input_bytes += audio_in;
+            }
+            if metrics.has_audio_output {
+                audio_output_requests += 1;
+                if let Some(audio_out) = metrics.audio_output_size_bytes {
+                    total_audio_output_bytes += audio_out;
+                }
+            }
+
+            // Track image generation metrics
+            if metrics.request_type == RequestType::ImageGeneration {
+                total_images_generated += metrics.image_count as u64;
+                total_image_bytes += metrics.total_image_size_bytes;
+                image_generation_time_values.push(metrics.total_time_ms);
+            }
         } else {
             failed += 1;
         }
@@ -1095,6 +1780,7 @@ pub async fn run_benchmark(
     itl_values.sort_by(|a, b| a.partial_cmp(b).unwrap());
     request_duration_values.sort_by(|a, b| a.partial_cmp(b).unwrap());
     verification_time_values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    image_generation_time_values.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
     // Log summary warning if many requests didn't get usage stats
     if requests_with_usage < successful {
@@ -1127,6 +1813,14 @@ pub async fn run_benchmark(
         tokens_per_request,
         verification_time_values,
         sample_prompts,
+        request_type: config.request_type.clone(),
+        audio_input_requests,
+        audio_output_requests,
+        total_audio_input_bytes,
+        total_audio_output_bytes,
+        total_images_generated,
+        total_image_bytes,
+        image_generation_time_values,
     })
 }
 
@@ -1173,6 +1867,10 @@ pub async fn run_scenario(scenario: &Scenario) -> Result<Vec<BenchmarkResult>> {
             verify: provider.verify,
             random_prompt_selection: scenario.random_prompt_selection,
             random_seed: scenario.random_seed,
+            request_type: scenario.request_type.clone(),
+            image_config: scenario.image_config.clone(),
+            audio_input: scenario.audio_input.clone(),
+            audio_output: scenario.audio_output,
         };
 
         let result = run_benchmark(&config, prompts.clone(), scenario.num_requests).await?;
@@ -1235,6 +1933,76 @@ pub fn print_result(result: &BenchmarkResult) {
             println!(
                 "TEE verification:                        {}/{} ✓",
                 result.verification_success, result.verification_attempted
+            );
+        }
+    }
+
+    // Show request type
+    match result.request_type {
+        RequestType::ImageGeneration => {
+            println!("Request type:                            Image Generation");
+        }
+        RequestType::ChatCompletion => {
+            println!("Request type:                            Chat Completion");
+        }
+    }
+
+    // Show audio metrics if any
+    if result.audio_input_requests > 0 || result.audio_output_requests > 0 {
+        println!();
+        println!("-----------Audio Metrics--------------");
+        if result.audio_input_requests > 0 {
+            println!(
+                "Requests with audio input:               {}",
+                result.audio_input_requests
+            );
+            if result.total_audio_input_bytes > 0 {
+                println!(
+                    "Total audio input:                       {:.2} KB",
+                    result.total_audio_input_bytes as f64 / 1024.0
+                );
+            }
+        }
+        if result.audio_output_requests > 0 {
+            println!(
+                "Requests with audio output:              {}",
+                result.audio_output_requests
+            );
+            if result.total_audio_output_bytes > 0 {
+                println!(
+                    "Total audio output:                      {:.2} KB",
+                    result.total_audio_output_bytes as f64 / 1024.0
+                );
+            }
+        }
+    }
+
+    // Show image generation metrics if any
+    if result.request_type == RequestType::ImageGeneration {
+        println!();
+        println!("-----------Image Generation Metrics-----------");
+        println!(
+            "Total images generated:                  {}",
+            result.total_images_generated
+        );
+        if result.total_image_bytes > 0 {
+            println!(
+                "Total image data:                        {:.2} MB",
+                result.total_image_bytes as f64 / (1024.0 * 1024.0)
+            );
+            println!(
+                "Avg image size:                          {:.2} KB",
+                (result.total_image_bytes as f64 / result.total_images_generated.max(1) as f64) / 1024.0
+            );
+        }
+        if !result.image_generation_time_values.is_empty() {
+            println!(
+                "Mean generation time (ms):               {:.2}",
+                mean(&result.image_generation_time_values)
+            );
+            println!(
+                "P95 generation time (ms):                {:.2}",
+                percentile(&result.image_generation_time_values, 95.0)
             );
         }
     }
@@ -1755,20 +2523,25 @@ pub fn print_comparison(results: &[BenchmarkResult]) {
 /// Expand environment variables in a string
 /// Replaces ${VAR_NAME} with the value of the environment variable
 fn expand_env_vars(s: &str) -> Result<String> {
-    let re = regex::Regex::new(r"\$\{([A-Z_][A-Z0-9_]*)\}").unwrap();
+    // Match ${VAR} or ${VAR:-default}
+    let re = regex::Regex::new(r"\$\{([A-Z_][A-Z0-9_]*)(?::-([^}]*))?\}").unwrap();
     let mut result = s.to_string();
     let mut missing_vars = Vec::new();
 
     for caps in re.captures_iter(s) {
-        if let Some(var_name) = caps.get(1) {
-            let var_name_str = var_name.as_str();
-            match std::env::var(var_name_str) {
-                Ok(value) => {
-                    let pattern = format!("${{{}}}", var_name_str);
-                    result = result.replace(&pattern, &value);
-                }
-                Err(_) => {
-                    missing_vars.push(var_name_str.to_string());
+        let full_match = caps.get(0).unwrap().as_str();
+        let var_name = caps.get(1).unwrap().as_str();
+        let default_value = caps.get(2).map(|m| m.as_str());
+
+        match std::env::var(var_name) {
+            Ok(value) => {
+                result = result.replace(full_match, &value);
+            }
+            Err(_) => {
+                if let Some(default) = default_value {
+                    result = result.replace(full_match, default);
+                } else {
+                    missing_vars.push(var_name.to_string());
                 }
             }
         }
@@ -1887,6 +2660,86 @@ fn write_result_to_file<W: std::io::Write>(file: &mut W, result: &BenchmarkResul
             result.verification_success, result.verification_attempted
         )?;
     }
+
+    // Write request type
+    match result.request_type {
+        RequestType::ImageGeneration => {
+            writeln!(file, "Request type:                            Image Generation")?;
+        }
+        RequestType::ChatCompletion => {
+            writeln!(file, "Request type:                            Chat Completion")?;
+        }
+    }
+
+    // Write audio metrics if any
+    if result.audio_input_requests > 0 || result.audio_output_requests > 0 {
+        writeln!(file)?;
+        writeln!(file, "-----------Audio Metrics--------------")?;
+        if result.audio_input_requests > 0 {
+            writeln!(
+                file,
+                "Requests with audio input:               {}",
+                result.audio_input_requests
+            )?;
+            if result.total_audio_input_bytes > 0 {
+                writeln!(
+                    file,
+                    "Total audio input:                       {:.2} KB",
+                    result.total_audio_input_bytes as f64 / 1024.0
+                )?;
+            }
+        }
+        if result.audio_output_requests > 0 {
+            writeln!(
+                file,
+                "Requests with audio output:              {}",
+                result.audio_output_requests
+            )?;
+            if result.total_audio_output_bytes > 0 {
+                writeln!(
+                    file,
+                    "Total audio output:                      {:.2} KB",
+                    result.total_audio_output_bytes as f64 / 1024.0
+                )?;
+            }
+        }
+    }
+
+    // Write image generation metrics if any
+    if result.request_type == RequestType::ImageGeneration {
+        writeln!(file)?;
+        writeln!(file, "-----------Image Generation Metrics-----------")?;
+        writeln!(
+            file,
+            "Total images generated:                  {}",
+            result.total_images_generated
+        )?;
+        if result.total_image_bytes > 0 {
+            writeln!(
+                file,
+                "Total image data:                        {:.2} MB",
+                result.total_image_bytes as f64 / (1024.0 * 1024.0)
+            )?;
+            writeln!(
+                file,
+                "Avg image size:                          {:.2} KB",
+                (result.total_image_bytes as f64 / result.total_images_generated.max(1) as f64) / 1024.0
+            )?;
+        }
+        if !result.image_generation_time_values.is_empty() {
+            writeln!(
+                file,
+                "Mean generation time (ms):               {:.2}",
+                mean(&result.image_generation_time_values)
+            )?;
+            writeln!(
+                file,
+                "P95 generation time (ms):                {:.2}",
+                percentile(&result.image_generation_time_values, 95.0)
+            )?;
+        }
+    }
+
     writeln!(
         file,
         "Maximum request concurrency:             {}",
