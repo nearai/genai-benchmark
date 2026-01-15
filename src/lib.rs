@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
 use tokio::time::sleep;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 fn build_http_client(concurrency: usize) -> Result<Client> {
     Client::builder()
@@ -1694,7 +1694,7 @@ pub async fn run_benchmark(
                 }
                 Err(e) => {
                     failed.fetch_add(1, Ordering::Relaxed);
-                    error!("Request failed: {}", e);
+                    progress.println(format!("ERROR: Request failed: {}", e));
                     let _ = tx
                         .send(RequestMetrics {
                             success: false,
