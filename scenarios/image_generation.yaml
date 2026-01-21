@@ -1,14 +1,14 @@
 name: "Qwen Image Generation Test"
 description: "Test image generation with Qwen-Image model including attestation verification"
-model: "Qwen/Qwen-Image-2512"
+model: "black-forest-labs/FLUX.2-klein-4B"
 providers:
   - name: "near"
     base_url: "${NEARAI_BASE_URL:-https://cloud-api.near.ai/v1}"
     api_key: "${NEARAI_API_KEY}"
     verify: true
 dataset:
-  type: synthetic
-  seed: 42
+  type: prompts
+  path: "datasets/image_prompts.txt"
 num_requests: 5
 concurrency: 2
 rps: 1
@@ -19,3 +19,4 @@ image_config:
   size: "1024x1024"
   n: 1
   response_format: "b64_json"
+  save_images: true

@@ -58,6 +58,9 @@ pub struct ImageGenerationConfig {
     /// Image style: "vivid" or "natural"
     #[serde(default)]
     pub style: Option<String>,
+    /// Save generated images to output/images/
+    #[serde(default)]
+    pub save_images: bool,
 }
 
 fn default_image_size() -> String {
@@ -80,6 +83,7 @@ impl Default for ImageGenerationConfig {
             response_format: default_image_response_format(),
             quality: None,
             style: None,
+            save_images: false,
         }
     }
 }
@@ -157,6 +161,9 @@ pub struct BenchmarkConfig {
     /// Enable audio output (modalities: ["audio"]) for models like Qwen3-Omni
     #[serde(default)]
     pub audio_output: bool,
+    /// Output directory for saving generated images (computed at runtime)
+    #[serde(skip)]
+    pub image_output_dir: Option<String>,
 }
 
 fn default_max_tokens() -> u32 {
@@ -768,7 +775,8 @@ pub fn generate_test_audio_base64() -> String {
     let num_channels: u16 = 1;
     let byte_rate: u32 = sample_rate * num_channels as u32 * bits_per_sample as u32 / 8;
     let block_align: u16 = num_channels * bits_per_sample / 8;
-    let data_size: u32 = sample_rate * duration_seconds * num_channels as u32 * bits_per_sample as u32 / 8;
+    let data_size: u32 =
+        sample_rate * duration_seconds * num_channels as u32 * bits_per_sample as u32 / 8;
     let file_size: u32 = 36 + data_size;
 
     let mut wav_data = Vec::with_capacity(file_size as usize + 8);
@@ -1051,18 +1059,23 @@ async fn fetch_tee_signature(
     chat_id: &str,
 ) -> Result<SignatureResponse> {
     let url = format!("{}/signature/{}", base_url.trim_end_matches('/'), chat_id);
-    
+
     // Retry up to 3 times with exponential backoff
     const MAX_RETRIES: u32 = 3;
     let mut last_error = None;
-    
+
     for attempt in 0..MAX_RETRIES {
         if attempt > 0 {
             let delay_ms = 500 * (1 << (attempt - 1)); // 500ms, 1000ms
-            debug!("Retrying signature fetch (attempt {}/{}) after {}ms", attempt + 1, MAX_RETRIES, delay_ms);
+            debug!(
+                "Retrying signature fetch (attempt {}/{}) after {}ms",
+                attempt + 1,
+                MAX_RETRIES,
+                delay_ms
+            );
             sleep(Duration::from_millis(delay_ms)).await;
         }
-        
+
         let mut req_builder = client.get(&url);
 
         if !api_key.is_empty() {
@@ -1101,7 +1114,12 @@ async fn fetch_tee_signature(
         return Ok(signature);
     }
 
-    Err(last_error.unwrap_or_else(|| anyhow!("Failed to fetch TEE signature after {} retries", MAX_RETRIES)))
+    Err(last_error.unwrap_or_else(|| {
+        anyhow!(
+            "Failed to fetch TEE signature after {} retries",
+            MAX_RETRIES
+        )
+    }))
 }
 
 /// Send an image generation request and collect metrics
@@ -1114,6 +1132,8 @@ async fn send_image_generation_request(
     model: &str,
     timeout: Duration,
     verify: bool,
+    request_index: usize,
+    output_dir: Option<&str>,
 ) -> Result<RequestMetrics> {
     let url = format!("{}/images/generations", base_url.trim_end_matches('/'));
     let start_time = Instant::now();
@@ -1168,12 +1188,63 @@ async fn send_image_generation_request(
         }
     }
 
+    // Save images to disk if configured
+    if config.save_images {
+        if let Some(output_dir) = output_dir {
+            use base64::Engine;
+
+            // Create directory if needed
+            if let Err(e) = std::fs::create_dir_all(output_dir) {
+                warn!(
+                    "Failed to create image output directory {}: {}",
+                    output_dir, e
+                );
+            } else {
+                // Sanitize prompt for filename (first ~50 chars, alphanumeric + underscores)
+                let safe_prompt: String = prompt
+                    .chars()
+                    .take(50)
+                    .map(|c| if c.is_alphanumeric() { c } else { '_' })
+                    .collect();
+                let safe_prompt = safe_prompt.trim_matches('_').to_lowercase();
+
+                for (img_idx, img) in image_response.data.iter().enumerate() {
+                    if let Some(b64) = &img.b64_json {
+                        match base64::engine::general_purpose::STANDARD.decode(b64) {
+                            Ok(bytes) => {
+                                let filename = format!(
+                                    "{:03}_{}{}.png",
+                                    request_index,
+                                    safe_prompt,
+                                    if img_idx > 0 {
+                                        format!("_{}", img_idx)
+                                    } else {
+                                        String::new()
+                                    }
+                                );
+                                let filepath = format!("{}/{}", output_dir, filename);
+                                if let Err(e) = std::fs::write(&filepath, bytes) {
+                                    warn!("Failed to save image to {}: {}", filepath, e);
+                                } else {
+                                    debug!("Saved image to {}", filepath);
+                                }
+                            }
+                            Err(e) => {
+                                warn!("Failed to decode base64 image: {}", e);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // TEE signature verification for image generation
     let (verification_attempted, verification_success, verification_time_ms) = if verify {
         if let Some(id) = &image_response.id {
             // Wait for signature to be cached by vLLM-proxy
             sleep(Duration::from_millis(1000)).await;
-            
+
             debug!("Verifying TEE signature for image ID: {}", id);
             let verify_start = Instant::now();
             match fetch_tee_signature(client, base_url, api_key, id).await {
@@ -1319,8 +1390,9 @@ async fn send_streaming_request(
                                         if first_token_time.is_none() {
                                             first_token_time = Some(now);
                                         } else {
-                                            let icl = now.duration_since(last_chunk_time).as_secs_f64()
-                                                * 1000.0;
+                                            let icl =
+                                                now.duration_since(last_chunk_time).as_secs_f64()
+                                                    * 1000.0;
                                             inter_chunk_latencies.push(icl);
                                         }
                                         last_chunk_time = now;
@@ -1332,7 +1404,7 @@ async fn send_streaming_request(
                                         }
                                     }
                                 }
-                                
+
                                 // Track audio modality if present
                                 if let Some(modality) = &delta.modality {
                                     if modality == "audio" {
@@ -1391,7 +1463,7 @@ async fn send_streaming_request(
         if let Some(id) = &chat_id {
             // Wait for signature to be cached by vLLM-proxy (signatures are stored after stream completes)
             sleep(Duration::from_millis(1000)).await;
-            
+
             debug!("Verifying TEE signature for chat ID: {}", id);
             let verify_start = Instant::now();
             match fetch_tee_signature(client, base_url, api_key, id).await {
@@ -1615,6 +1687,8 @@ pub async fn run_benchmark(
         let config_audio_output = config.audio_output;
         let config_request_type = config.request_type.clone();
         let config_image_config = config.image_config.clone();
+        let config_image_output_dir = config.image_output_dir.clone();
+        let request_index = i;
 
         active.fetch_add(1, Ordering::SeqCst);
 
@@ -1640,6 +1714,8 @@ pub async fn run_benchmark(
                         &config_model,
                         config_timeout,
                         config_verify,
+                        request_index,
+                        config_image_output_dir.as_deref(),
                     )
                     .await
                 }
@@ -1887,6 +1963,19 @@ pub async fn run_scenario(scenario: &Scenario) -> Result<Vec<BenchmarkResult>> {
 
     info!("Loaded {} prompts", prompts.len());
 
+    // Generate image output directory if save_images is enabled
+    let image_output_dir = if let Some(ref img_config) = scenario.image_config {
+        if img_config.save_images {
+            let safe_name = scenario.name.replace(' ', "_").to_lowercase();
+            let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+            Some(format!("output/images/{}_{}", safe_name, timestamp))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     let mut results = Vec::new();
 
     for provider in &scenario.providers {
@@ -1918,6 +2007,7 @@ pub async fn run_scenario(scenario: &Scenario) -> Result<Vec<BenchmarkResult>> {
             image_config: scenario.image_config.clone(),
             audio_input: scenario.audio_input.clone(),
             audio_output: scenario.audio_output,
+            image_output_dir: image_output_dir.clone(),
         };
 
         let result = run_benchmark(&config, prompts.clone(), scenario.num_requests).await?;
@@ -2039,7 +2129,8 @@ pub fn print_result(result: &BenchmarkResult) {
             );
             println!(
                 "Avg image size:                          {:.2} KB",
-                (result.total_image_bytes as f64 / result.total_images_generated.max(1) as f64) / 1024.0
+                (result.total_image_bytes as f64 / result.total_images_generated.max(1) as f64)
+                    / 1024.0
             );
         }
         if !result.image_generation_time_values.is_empty() {
@@ -2711,10 +2802,16 @@ fn write_result_to_file<W: std::io::Write>(file: &mut W, result: &BenchmarkResul
     // Write request type
     match result.request_type {
         RequestType::ImageGeneration => {
-            writeln!(file, "Request type:                            Image Generation")?;
+            writeln!(
+                file,
+                "Request type:                            Image Generation"
+            )?;
         }
         RequestType::ChatCompletion => {
-            writeln!(file, "Request type:                            Chat Completion")?;
+            writeln!(
+                file,
+                "Request type:                            Chat Completion"
+            )?;
         }
     }
 
@@ -2770,7 +2867,8 @@ fn write_result_to_file<W: std::io::Write>(file: &mut W, result: &BenchmarkResul
             writeln!(
                 file,
                 "Avg image size:                          {:.2} KB",
-                (result.total_image_bytes as f64 / result.total_images_generated.max(1) as f64) / 1024.0
+                (result.total_image_bytes as f64 / result.total_images_generated.max(1) as f64)
+                    / 1024.0
             )?;
         }
         if !result.image_generation_time_values.is_empty() {

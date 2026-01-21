@@ -453,6 +453,7 @@ async fn run_single_benchmark(args: &Args) -> Result<()> {
             response_format: "b64_json".to_string(),
             quality: args.image_quality.clone(),
             style: None,
+            save_images: false,
         })
     } else {
         None
@@ -481,6 +482,7 @@ async fn run_single_benchmark(args: &Args) -> Result<()> {
         image_config,
         audio_input,
         audio_output: args.audio_output,
+        image_output_dir: None,
     };
 
     let result = run_benchmark(&config, prompts, args.num_requests).await?;
