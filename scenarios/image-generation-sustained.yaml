@@ -1,0 +1,22 @@
+name: "Image Generation Sustained Load"
+description: "Test sustained throughput over extended period to measure stability"
+model: "black-forest-labs/FLUX.2-klein-4B"
+providers:
+  - name: "near"
+    base_url: "${NEARAI_BASE_URL:-https://cloud-api.near.ai/v1}"
+    api_key: "${NEARAI_API_KEY}"
+    verify: true
+dataset:
+  type: prompts
+  path: "datasets/image_prompts.txt"
+num_requests: 200
+concurrency: 5
+rps: 2
+max_tokens: 1
+timeout_secs: 900
+request_type: image_generation
+image_config:
+  size: "1024x1024"
+  n: 1
+  response_format: "b64_json"
+  save_images: true

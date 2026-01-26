@@ -4,7 +4,7 @@ use genai_benchmark::{
     expand_scenario_env_vars, expand_multi_phase_scenario_env_vars, generate_output_filename, load_dataset, load_scenario_from_file,
     load_multi_phase_scenario_from_file, print_comparison, print_result, run_benchmark,
     run_scenario, run_multi_phase_scenario, save_results_to_file,
-    BenchmarkConfig, DatasetConfig, Scenario, MultiPhaseScenario,
+    AudioInputConfig, BenchmarkConfig, DatasetConfig, ImageGenerationConfig, RequestType, Scenario, MultiPhaseScenario,
 };
 use tracing::info;
 
@@ -12,6 +12,19 @@ use tracing::info;
 const SCENARIO_NEAR_VS_BEDROCK: &str = include_str!("../../scenarios/near_vs_bedrock.yaml");
 const SCENARIO_LOW_CONCURRENCY: &str = include_str!("../../scenarios/low_concurrency.yaml");
 const SCENARIO_SINGLE_PROVIDER: &str = include_str!("../../scenarios/single_provider.yaml");
+const SCENARIO_AUDIO_INPUT: &str = include_str!("../../scenarios/audio_input.yaml");
+const SCENARIO_IMAGE_GENERATION: &str = include_str!("../../scenarios/image_generation.yaml");
+const SCENARIO_IMAGE_GENERATION_STRESS: &str =
+    include_str!("../../scenarios/image-generation-stress.yaml");
+const SCENARIO_IMAGE_GENERATION_SUSTAINED: &str =
+    include_str!("../../scenarios/image-generation-sustained.yaml");
+const SCENARIO_IMAGE_GENERATION_512: &str =
+    include_str!("../../scenarios/image-generation-512.yaml");
+const SCENARIO_IMAGE_GENERATION_BATCH: &str =
+    include_str!("../../scenarios/image-generation-batch.yaml");
+const SCENARIO_AUDIO_OUTPUT_STRESS: &str =
+    include_str!("../../scenarios/audio-output-stress.yaml");
+const SCENARIO_MULTIMODAL: &str = include_str!("../../scenarios/multimodal.yaml");
 
 // Embedded multi-phase scenario files
 const SCENARIO_MULTI_ROUND_QA: &str = include_str!("../../scenarios/multi_round_qa.yaml");
@@ -25,6 +38,14 @@ fn get_embedded_scenario(name: &str) -> Option<&'static str> {
         "near-vs-bedrock" => Some(SCENARIO_NEAR_VS_BEDROCK),
         "low-concurrency" => Some(SCENARIO_LOW_CONCURRENCY),
         "single-provider" => Some(SCENARIO_SINGLE_PROVIDER),
+        "audio-input" => Some(SCENARIO_AUDIO_INPUT),
+        "image-generation" => Some(SCENARIO_IMAGE_GENERATION),
+        "image-generation-stress" => Some(SCENARIO_IMAGE_GENERATION_STRESS),
+        "image-generation-sustained" => Some(SCENARIO_IMAGE_GENERATION_SUSTAINED),
+        "image-generation-512" => Some(SCENARIO_IMAGE_GENERATION_512),
+        "image-generation-batch" => Some(SCENARIO_IMAGE_GENERATION_BATCH),
+        "audio-output-stress" => Some(SCENARIO_AUDIO_OUTPUT_STRESS),
+        "multimodal" => Some(SCENARIO_MULTIMODAL),
         _ => None,
     }
 }
@@ -45,6 +66,14 @@ fn list_embedded_scenarios() -> Vec<&'static str> {
         "near-vs-bedrock",
         "low-concurrency",
         "single-provider",
+        "audio-input",
+        "audio-output-stress",
+        "image-generation",
+        "image-generation-stress",
+        "image-generation-sustained",
+        "image-generation-512",
+        "image-generation-batch",
+        "multimodal",
     ]
 }
 
@@ -54,6 +83,7 @@ fn list_embedded_multi_phase_scenarios() -> Vec<&'static str> {
         "rag",
         "long-doc-qa",
         "multi-doc-qa",
+        "same-doc-qa",
     ]
 }
 
@@ -133,6 +163,34 @@ struct Args {
     /// Skip first N conversations from dataset
     #[arg(long, default_value = "0", global = true)]
     skip: usize,
+
+    /// Enable audio input testing (adds test audio to requests)
+    #[arg(long, global = true)]
+    audio_input: bool,
+
+    /// Enable audio output testing (sets modalities to include "audio")
+    #[arg(long, global = true)]
+    audio_output: bool,
+
+    /// Enable image generation testing instead of chat completion
+    #[arg(long, global = true)]
+    image_generation: bool,
+
+    /// Image size for image generation (e.g., "1024x1024", "512x512")
+    #[arg(long, default_value = "1024x1024", global = true)]
+    image_size: String,
+
+    /// Number of images to generate per request
+    #[arg(long, default_value = "1", global = true)]
+    image_n: u32,
+
+    /// Image quality ("standard" or "hd")
+    #[arg(long, global = true)]
+    image_quality: Option<String>,
+
+    /// Enable TEE signature verification
+    #[arg(long, global = true)]
+    verify: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -541,6 +599,32 @@ async fn run_single_benchmark(args: &Args) -> Result<()> {
 
     info!("Loaded {} prompts, starting benchmark...", prompts.len());
 
+    // Determine request type and configuration
+    let request_type = if args.image_generation {
+        RequestType::ImageGeneration
+    } else {
+        RequestType::ChatCompletion
+    };
+
+    let image_config = if args.image_generation {
+        Some(ImageGenerationConfig {
+            size: args.image_size.clone(),
+            n: args.image_n,
+            response_format: "b64_json".to_string(),
+            quality: args.image_quality.clone(),
+            style: None,
+            save_images: false,
+        })
+    } else {
+        None
+    };
+
+    let audio_input = if args.audio_input {
+        Some(AudioInputConfig::default())
+    } else {
+        None
+    };
+
     let config = BenchmarkConfig {
         name: None,
         base_url,
@@ -551,9 +635,14 @@ async fn run_single_benchmark(args: &Args) -> Result<()> {
         rps: args.rps,
         timeout_secs: args.timeout,
         disable_prewarm: false,
-        verify: false,
+        verify: args.verify,
         random_prompt_selection: args.random_prompts,
         random_seed: args.prompt_seed,
+        request_type,
+        image_config,
+        audio_input,
+        audio_output: args.audio_output,
+        image_output_dir: None,
     };
 
     let result = run_benchmark(&config, prompts, args.num_requests).await?;

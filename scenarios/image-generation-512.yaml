@@ -1,0 +1,22 @@
+name: "Image Generation - 512x512"
+description: "Throughput test with smaller images for performance comparison"
+model: "black-forest-labs/FLUX.2-klein-4B"
+providers:
+  - name: "near"
+    base_url: "${NEARAI_BASE_URL:-https://cloud-api.near.ai/v1}"
+    api_key: "${NEARAI_API_KEY}"
+    verify: true
+dataset:
+  type: prompts
+  path: "datasets/image_prompts.txt"
+num_requests: 50
+concurrency: 5
+rps: 5
+max_tokens: 1
+timeout_secs: 300
+request_type: image_generation
+image_config:
+  size: "512x512"
+  n: 1
+  response_format: "b64_json"
+  save_images: true

@@ -1,0 +1,18 @@
+name: "Audio Output Stress Test"
+description: "High-concurrency stress test for audio output (text + audio modalities) to find maximum throughput"
+model: "Qwen/Qwen3-Omni-30B-A3B-Instruct"
+providers:
+  - name: "near"
+    base_url: "${NEARAI_BASE_URL:-https://cloud-api.near.ai/v1}"
+    api_key: "${NEARAI_API_KEY}"
+    verify: true
+dataset:
+  type: synthetic
+  seed: 42
+num_requests: 256
+concurrency: 16  # High concurrency to saturate model
+rps: 16          # Aggressive rate
+max_tokens: 256
+timeout_secs: 600
+request_type: chat_completion
+audio_output: true  # Enable modalities: ["text", "audio"]
