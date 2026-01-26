@@ -1,0 +1,29 @@
+name: "RAG Cache Benchmark"
+description: "Benchmark RAG with quality metrics and cache effectiveness tracking"
+model: "deepseek-ai/DeepSeek-V3.1"
+
+providers:
+  - name: "without-lmcache"
+    base_url: "https://cloud-api.near.ai/v1"
+    api_key: "${NEARAI_API_KEY}"
+  - name: "with-lmcache"
+    base_url: "https://cloud-api.near.ai/v1"
+    api_key: "${NEARAI_API_KEY}"
+
+dataset:
+  type: rag
+  documents_path: "./datasets/rag.jsonl"
+
+phases:
+  - phase: warmup
+    num_requests: 10
+    concurrency: 1
+    rps: 1
+  - phase: query
+    num_requests: 100
+    concurrency: 10
+    rps: 10
+
+max_tokens: 512
+timeout_secs: 300
+enable_quality_metrics: true

@@ -1,5 +1,25 @@
 //! GenAI Benchmark - Load testing library for OpenAI-compatible LLM APIs
 
+pub mod cache_metrics;
+pub mod conversation;
+pub mod prompt_builders;
+pub mod quality_metrics;
+
+// Re-export types for convenience
+pub use cache_metrics::{
+    extract_cache_metrics_from_headers, is_cache_hit, calculate_cache_token_savings,
+    CacheMetricsAggregator,
+};
+pub use conversation::{ConversationManager, ConversationState};
+pub use prompt_builders::{
+    DocumentStore, PromptBuilder, PromptContext, LongDocPromptBuilder,
+    MultiDocPromptBuilder, MultiRoundPromptBuilder, RagPromptBuilder,
+};
+pub use quality_metrics::{
+    calculate_f1_score, calculate_rouge_l_score, calculate_quality_scores,
+    average_f1_scores, average_rouge_l_scores,
+};
+
 use anyhow::{anyhow, Context, Result};
 use async_channel::{bounded, Receiver, Sender};
 use futures::StreamExt;
@@ -233,10 +253,130 @@ pub enum DatasetConfig {
         #[serde(default)]
         seed: Option<u64>,
     },
+    /// Multi-round QA benchmark (LMCache style)
+    #[serde(rename = "multiroundqa")]
+    MultiRoundQa {
+        /// Path to JSONL file with user_id, round, question
+        path: String,
+        /// Number of rounds in the conversation
+        #[serde(default = "default_num_rounds")]
+        num_rounds: usize,
+        /// Users per round for gradual ramp-up
+        #[serde(default)]
+        users_per_round: Option<Vec<usize>>,
+    },
+    /// RAG benchmark with document + question pairs
+    #[serde(rename = "rag")]
+    Rag {
+        /// Path to JSONL file with documents and questions
+        documents_path: String,
+        /// Path to JSONL file with questions
+        #[serde(default)]
+        questions_path: Option<String>,
+        /// Use precomputed KV cache
+        #[serde(default)]
+        use_precomputed_cache: bool,
+    },
+    /// Long document QA benchmark
+    #[serde(rename = "longdocqa")]
+    LongDocQa {
+        /// Path to JSONL file with long documents
+        documents_path: String,
+        /// Path to JSONL file with questions
+        #[serde(default)]
+        questions_path: Option<String>,
+        /// Document length in tokens
+        #[serde(default = "default_doc_token_length")]
+        doc_token_length: usize,
+        /// Number of warmup rounds
+        #[serde(default = "default_warmup_rounds")]
+        warmup_rounds: usize,
+    },
+    /// Multi-document QA benchmark
+    #[serde(rename = "multidocqa")]
+    MultiDocQa {
+        /// Path to JSONL file with documents
+        documents_path: String,
+        /// Path to JSONL file with questions
+        #[serde(default)]
+        questions_path: Option<String>,
+        /// Number of documents per request
+        #[serde(default = "default_docs_per_request")]
+        docs_per_request: usize,
+        /// Number of warmup rounds
+        #[serde(default = "default_warmup_rounds")]
+        warmup_rounds: usize,
+        /// Sample strategy
+        #[serde(default)]
+        sample_strategy: SampleStrategy,
+    },
 }
 
 fn default_hf_dataset() -> String {
     "anon8231489123/ShareGPT_Vicuna_unfiltered".to_string()
+}
+
+fn default_num_rounds() -> usize {
+    2
+}
+
+fn default_doc_token_length() -> usize {
+    20000
+}
+
+fn default_warmup_rounds() -> usize {
+    1
+}
+
+fn default_docs_per_request() -> usize {
+    3
+}
+
+/// Sampling strategy for multi-doc QA
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SampleStrategy {
+    /// Random sampling without replacement
+    Random,
+    /// Sequential sampling
+    Sequential,
+    /// CacheBlend strategy with hit/miss ratio
+    CacheBlend {
+        /// Cache hit ratio (0.0 to 1.0)
+        #[serde(default)]
+        hit_ratio: f64,
+    },
+}
+
+impl Default for SampleStrategy {
+    fn default() -> Self {
+        SampleStrategy::Random
+    }
+}
+
+/// Benchmark phase
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum BenchmarkPhase {
+    /// Warmup phase (prime the cache)
+    Warmup,
+    /// Query phase (measure cache effectiveness)
+    Query,
+}
+
+/// Configuration for a single benchmark phase
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PhaseConfig {
+    /// Phase type
+    pub phase: BenchmarkPhase,
+    /// Number of requests in this phase
+    pub num_requests: usize,
+    /// Maximum concurrent requests
+    #[serde(default)]
+    pub concurrency: Option<usize>,
+    /// Target requests per second
+    #[serde(default)]
+    pub rps: Option<f64>,
 }
 
 impl Default for DatasetConfig {
@@ -297,6 +437,34 @@ pub struct Scenario {
 
 fn default_num_requests() -> usize {
     100
+}
+
+/// A multi-phase scenario configuration (warmup + query phases)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MultiPhaseScenario {
+    /// Name of the scenario
+    pub name: String,
+    /// Description
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Model to test
+    pub model: String,
+    /// List of providers to test against
+    pub providers: Vec<ProviderConfig>,
+    /// Dataset configuration
+    #[serde(default)]
+    pub dataset: DatasetConfig,
+    /// Execution phases (warmup, query, etc.)
+    pub phases: Vec<PhaseConfig>,
+    /// Maximum tokens to generate
+    #[serde(default = "default_max_tokens")]
+    pub max_tokens: u32,
+    /// Request timeout in seconds
+    #[serde(default = "default_timeout")]
+    pub timeout_secs: u64,
+    /// Enable quality metrics (for RAG)
+    #[serde(default)]
+    pub enable_quality_metrics: bool,
 }
 
 /// Content part for multimodal messages
@@ -427,8 +595,34 @@ impl Message {
     }
 }
 
+/// Cache effectiveness metrics
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheMetrics {
+    /// Whether this request was a cache hit
+    pub cache_hit: bool,
+    /// Number of tokens served from cache
+    pub cached_tokens: u32,
+    /// Number of tokens computed (not cached)
+    pub computed_tokens: u32,
+    /// Overall cache hit rate for this request
+    pub cache_hit_rate: f64,
+}
+
+/// Quality metrics for response (RAG benchmark)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QualityMetrics {
+    /// F1 score (0.0 to 1.0)
+    pub f1_score: Option<f64>,
+    /// ROUGE-L score (0.0 to 1.0)
+    pub rouge_l_score: Option<f64>,
+    /// Expected answer
+    pub expected_answer: String,
+    /// Actual response
+    pub actual_response: String,
+}
+
 /// Metrics for a single request
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestMetrics {
     pub success: bool,
     pub input_tokens: u32,
@@ -447,6 +641,12 @@ pub struct RequestMetrics {
     pub verification_time_ms: f64,
     /// First 20 tokens of the prompt for reference
     pub prompt_preview: String,
+    /// Cache metrics (optional, for LMCache benchmarks)
+    #[serde(skip)]
+    pub cache_metrics: Option<CacheMetrics>,
+    /// Quality metrics (optional, for RAG benchmark)
+    #[serde(skip)]
+    pub quality_metrics: Option<QualityMetrics>,
     /// Type of request
     pub request_type: RequestType,
     // Audio-specific metrics
@@ -517,6 +717,27 @@ pub struct BenchmarkResult {
     pub verification_success: usize,
     /// Number of requests where TEE verification failed
     pub verification_failed: usize,
+    /// Number of cache hits (LMCache benchmarks)
+    #[serde(default)]
+    pub cache_hits: usize,
+    /// Number of cache misses (LMCache benchmarks)
+    #[serde(default)]
+    pub cache_misses: usize,
+    /// Average cache hit rate (0.0 to 1.0)
+    #[serde(default)]
+    pub avg_cache_hit_rate: f64,
+    /// Total tokens saved by caching
+    #[serde(default)]
+    pub cache_token_savings: u64,
+    /// Average F1 score for RAG benchmarks (0.0 to 1.0)
+    #[serde(default)]
+    pub avg_f1_score: f64,
+    /// Average ROUGE-L score for RAG benchmarks (0.0 to 1.0)
+    #[serde(default)]
+    pub avg_rouge_l_score: f64,
+    /// Number of requests with quality metrics evaluated
+    #[serde(default)]
+    pub quality_metrics_count: usize,
     #[serde(skip)]
     pub ttft_values: Vec<f64>,
     #[serde(skip)]
@@ -530,6 +751,12 @@ pub struct BenchmarkResult {
     /// Verification latency values (ms) for statistics
     #[serde(skip)]
     pub verification_time_values: Vec<f64>,
+    /// F1 scores for individual requests (for per-request analysis)
+    #[serde(skip)]
+    pub f1_scores: Vec<f64>,
+    /// ROUGE-L scores for individual requests (for per-request analysis)
+    #[serde(skip)]
+    pub rouge_l_scores: Vec<f64>,
     /// Sample prompt previews (first 5 unique prompts)
     #[serde(skip)]
     pub sample_prompts: Vec<String>,
@@ -759,6 +986,47 @@ struct ShareGPTConversation {
 struct ShareGPTMessage {
     from: String,
     value: String,
+}
+
+// ============================================================================
+// LMCache Benchmark Data Structures
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+struct MultiRoundQaEntry {
+    user_id: String,
+    round: usize,
+    question: String,
+    #[serde(default)]
+    system_prompt: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RagEntry {
+    document: String,
+    question: String,
+    #[serde(default)]
+    answer: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LongDocQaEntry {
+    document: String,
+    questions: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MultiDocQaEntry {
+    document_ids: Vec<String>,
+    question: String,
+    #[serde(default)]
+    answer: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DocumentEntry {
+    id: String,
+    content: String,
 }
 
 // ============================================================================
@@ -1044,7 +1312,222 @@ pub async fn load_dataset(
             load_prompts_file(path, *skip, num_requests * 2).await
         }
         DatasetConfig::Synthetic { seed } => Ok(generate_synthetic_prompts(num_requests, *seed)),
+        DatasetConfig::MultiRoundQa {
+            path,
+            num_rounds: _,
+            users_per_round: _,
+        } => {
+            // Phase 2: Implementation stub
+            load_multi_round_qa_dataset(path, num_requests).await
+        }
+        DatasetConfig::Rag {
+            documents_path,
+            questions_path: _,
+            use_precomputed_cache: _,
+        } => {
+            // Phase 2: Implementation stub
+            load_rag_dataset(documents_path, num_requests).await
+        }
+        DatasetConfig::LongDocQa {
+            documents_path,
+            questions_path: _,
+            doc_token_length: _,
+            warmup_rounds: _,
+        } => {
+            // Phase 2: Implementation stub
+            load_long_doc_qa_dataset(documents_path, num_requests).await
+        }
+        DatasetConfig::MultiDocQa {
+            documents_path: _,
+            questions_path,
+            docs_per_request: _,
+            warmup_rounds: _,
+            sample_strategy: _,
+        } => {
+            // Phase 2: Implementation stub
+            let qpath = questions_path
+                .as_ref()
+                .map(|p| p.as_str())
+                .unwrap_or("./datasets/multi_doc_qa.jsonl");
+            load_multi_doc_qa_dataset(qpath, num_requests).await
+        }
     }
+}
+
+/// Load multi-round QA dataset (JSONL format with user_id, round, question)
+async fn load_multi_round_qa_dataset(path: &str, num_requests: usize) -> Result<Vec<Vec<Message>>> {
+    info!("Loading multi-round QA dataset from: {}", path);
+
+    let content = tokio::fs::read_to_string(path).await?;
+
+    let entries: Vec<MultiRoundQaEntry> = content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+
+    if entries.is_empty() {
+        return Err(anyhow!("No entries found in multi-round QA dataset"));
+    }
+
+    // Convert entries to prompts
+    // For multi-round QA, we create a prompt for each question
+    let prompts: Vec<Vec<Message>> = entries
+        .iter()
+        .take(num_requests * 2)
+        .map(|entry| {
+            let mut messages = Vec::new();
+
+            // Add system prompt if provided
+            if let Some(system_prompt) = &entry.system_prompt {
+                messages.push(Message {
+                    role: "system".to_string(),
+                    content: MessageContent::Text(system_prompt.clone()),
+                });
+            }
+
+            // Add the question as user message
+            messages.push(Message {
+                role: "user".to_string(),
+                content: MessageContent::Text(entry.question.clone()),
+            });
+
+            messages
+        })
+        .collect();
+
+    info!("Loaded {} prompts from multi-round QA dataset", prompts.len());
+    Ok(prompts)
+}
+
+/// Load RAG dataset (documents + questions)
+async fn load_rag_dataset(path: &str, num_requests: usize) -> Result<Vec<Vec<Message>>> {
+    info!("Loading RAG dataset from: {}", path);
+
+    let content = tokio::fs::read_to_string(path).await?;
+
+    let entries: Vec<RagEntry> = content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+
+    if entries.is_empty() {
+        return Err(anyhow!("No entries found in RAG dataset"));
+    }
+
+    // Convert entries to prompts
+    // RAG format: system prompt + document + user question
+    let prompts: Vec<Vec<Message>> = entries
+        .iter()
+        .take(num_requests * 2)
+        .map(|entry| {
+            vec![
+                Message {
+                    role: "system".to_string(),
+                    content: MessageContent::Text("Answer the following question based on the provided document.".to_string()),
+                },
+                Message {
+                    role: "user".to_string(),
+                    content: MessageContent::Text(format!(
+                        "Document:\n{}\n\nQuestion: {}",
+                        entry.document, entry.question
+                    )),
+                },
+            ]
+        })
+        .collect();
+
+    info!("Loaded {} prompts from RAG dataset", prompts.len());
+    Ok(prompts)
+}
+
+/// Load long document QA dataset
+async fn load_long_doc_qa_dataset(path: &str, num_requests: usize) -> Result<Vec<Vec<Message>>> {
+    info!("Loading long document QA dataset from: {}", path);
+
+    let content = tokio::fs::read_to_string(path).await?;
+
+    let entries: Vec<LongDocQaEntry> = content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+
+    if entries.is_empty() {
+        return Err(anyhow!("No entries found in long document QA dataset"));
+    }
+
+    // Convert entries to prompts
+    // For long doc QA, create a prompt for each question in each document
+    let mut prompts = Vec::new();
+    for entry in entries.iter().take(num_requests) {
+        for question in &entry.questions {
+            if prompts.len() >= num_requests * 2 {
+                break;
+            }
+            prompts.push(vec![
+                Message {
+                    role: "system".to_string(),
+                    content: MessageContent::Text("Answer the following question based on the document.".to_string()),
+                },
+                Message {
+                    role: "user".to_string(),
+                    content: MessageContent::Text(format!(
+                        "Document:\n{}\n\nQuestion: {}",
+                        entry.document, question
+                    )),
+                },
+            ]);
+        }
+    }
+
+    info!("Loaded {} prompts from long document QA dataset", prompts.len());
+    Ok(prompts)
+}
+
+/// Load multi-document QA dataset
+async fn load_multi_doc_qa_dataset(path: &str, num_requests: usize) -> Result<Vec<Vec<Message>>> {
+    info!("Loading multi-document QA dataset from: {}", path);
+
+    let content = tokio::fs::read_to_string(path).await?;
+
+    let entries: Vec<MultiDocQaEntry> = content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+
+    if entries.is_empty() {
+        return Err(anyhow!("No entries found in multi-document QA dataset"));
+    }
+
+    // For multi-doc QA, we create a simple prompt for each question
+    // In a full implementation, we would load documents and concatenate them
+    let prompts: Vec<Vec<Message>> = entries
+        .iter()
+        .take(num_requests * 2)
+        .map(|entry| {
+            vec![
+                Message {
+                    role: "system".to_string(),
+                    content: MessageContent::Text("Answer the following question based on the provided documents."
+                        .to_string()),
+                },
+                Message {
+                    role: "user".to_string(),
+                    content: MessageContent::Text(format!(
+                        "Documents: {}\n\nQuestion: {}",
+                        entry.document_ids.join(", "),
+                        entry.question
+                    )),
+                },
+            ]
+        })
+        .collect();
+
+    info!("Loaded {} prompts from multi-document QA dataset", prompts.len());
+    Ok(prompts)
 }
 
 // ============================================================================
@@ -1294,6 +1777,8 @@ async fn send_image_generation_request(
         verification_success,
         verification_time_ms,
         prompt_preview,
+        cache_metrics: None,
+        quality_metrics: None,
         request_type: RequestType::ImageGeneration,
         audio_input_size_bytes: None,
         audio_output_size_bytes: None,
@@ -1329,6 +1814,11 @@ async fn send_streaming_request(
     let req_builder = req_builder.json(&request);
 
     let mut es = EventSource::new(req_builder)?;
+
+    // Note: Cache headers are not currently accessible through EventSource
+    // EventSource consumes the response internally, preventing header access
+    // Future enhancement: consider custom streaming implementation for header capture
+    let response_headers = reqwest::header::HeaderMap::new();
 
     let mut first_token_time: Option<Instant> = None;
     let mut last_chunk_time = start_time;
@@ -1498,6 +1988,9 @@ async fn send_streaming_request(
         .map(|t| t.duration_since(start_time).as_secs_f64() * 1000.0)
         .unwrap_or(total_time.as_secs_f64() * 1000.0);
 
+    // Extract cache metrics from response headers
+    let cache_metrics = extract_cache_metrics_from_headers(&response_headers, input_tokens, output_tokens);
+
     Ok(RequestMetrics {
         success: true,
         input_tokens,
@@ -1512,6 +2005,8 @@ async fn send_streaming_request(
         verification_success,
         verification_time_ms,
         prompt_preview,
+        cache_metrics,
+        quality_metrics: None,
         request_type,
         audio_input_size_bytes,
         audio_output_size_bytes,
@@ -1551,10 +2046,78 @@ async fn prewarm_connections(client: &Client, base_url: &str, api_key: &str, cou
 }
 
 /// Run a benchmark with the given configuration
+/// Run a multi-phase benchmark with warmup and query phases
+/// This function orchestrates benchmark execution across multiple phases,
+/// useful for testing cache effectiveness (warmup primes cache, query measures hits)
+pub async fn run_multi_phase_benchmark(
+    config: &BenchmarkConfig,
+    prompts: Vec<Vec<Message>>,
+    phases: Vec<PhaseConfig>,
+    conversation_manager: Option<&ConversationManager>,
+) -> Result<Vec<BenchmarkResult>> {
+    info!("Running multi-phase benchmark: {}", config.name.as_deref().unwrap_or("unnamed"));
+    info!("Phases: {}", phases.len());
+
+    let mut all_results = Vec::new();
+
+    for (phase_idx, phase_config) in phases.iter().enumerate() {
+        info!(
+            "Starting phase {} of {}: {:?}",
+            phase_idx + 1,
+            phases.len(),
+            phase_config.phase
+        );
+
+        // Use phase-specific concurrency and RPS if provided
+        let phase_concurrency = phase_config.concurrency.unwrap_or(config.concurrency);
+        let phase_rps = phase_config.rps.unwrap_or(config.rps);
+
+        // Create a modified config for this phase
+        let mut phase_config_internal = config.clone();
+        phase_config_internal.concurrency = phase_concurrency;
+        phase_config_internal.rps = phase_rps;
+
+        // Add phase name to config for tracking
+        phase_config_internal.name = Some(format!(
+            "{} - {:?}",
+            config.name.as_deref().unwrap_or("Benchmark"),
+            phase_config.phase
+        ));
+
+        // Run benchmark for this phase
+        let phase_result = run_benchmark_internal(
+            &phase_config_internal,
+            prompts.clone(),
+            phase_config.num_requests,
+            conversation_manager,
+        )
+        .await?;
+
+        info!(
+            "Phase {:?} complete: {} successful, {} failed",
+            phase_config.phase, phase_result.successful_requests, phase_result.failed_requests
+        );
+
+        all_results.push(phase_result);
+    }
+
+    Ok(all_results)
+}
+
 pub async fn run_benchmark(
     config: &BenchmarkConfig,
     prompts: Vec<Vec<Message>>,
     num_requests: usize,
+) -> Result<BenchmarkResult> {
+    run_benchmark_internal(config, prompts, num_requests, None).await
+}
+
+/// Internal benchmark runner with optional conversation manager support
+async fn run_benchmark_internal(
+    config: &BenchmarkConfig,
+    prompts: Vec<Vec<Message>>,
+    num_requests: usize,
+    conversation_manager: Option<&ConversationManager>,
 ) -> Result<BenchmarkResult> {
     let client = build_http_client(config.concurrency)?;
 
@@ -1677,6 +2240,36 @@ pub async fn run_benchmark(
             None
         };
 
+        let mut messages = prompts[prompt_indices[i]].clone();
+
+        // If we have a conversation manager, integrate conversation history
+        if let Some(manager) = conversation_manager {
+            // For multi-user scenarios, use user ID from metadata or generate one
+            let user_id = format!("user_{}", i % 10); // Simple round-robin user assignment
+
+            // Get existing conversation history
+            let history = manager.get_history(&user_id).await;
+
+            // Prepend history to current messages (skip system prompts from history)
+            if !history.is_empty() {
+                let mut new_messages = history
+                    .into_iter()
+                    .filter(|m| m.role != "system")
+                    .collect::<Vec<_>>();
+                new_messages.extend(messages);
+                messages = new_messages;
+            }
+
+            // Record this turn in conversation history
+            // Extract just the user message (last message in the original prompt set)
+            if let Some(last_msg) = prompts[prompt_indices[i]].iter().last() {
+                if last_msg.role == "user" {
+                    manager.append_message(&user_id, last_msg.clone()).await;
+                }
+            }
+        }
+
+
         let prompt_preview = extract_prompt_preview(&messages, 20);
         let config_base_url = config.base_url.clone();
         let config_api_key = config.api_key.clone();
@@ -1786,6 +2379,8 @@ pub async fn run_benchmark(
                             verification_success: false,
                             verification_time_ms: 0.0,
                             prompt_preview,
+                            cache_metrics: None,
+                            quality_metrics: None,
                             request_type: config_request_type,
                             audio_input_size_bytes: None,
                             audio_output_size_bytes: None,
@@ -1824,12 +2419,19 @@ pub async fn run_benchmark(
     let mut verification_attempted = 0;
     let mut verification_success = 0;
     let mut verification_failed = 0;
+    let mut cache_hits = 0;
+    let mut cache_misses = 0;
+    let mut cache_token_savings: u64 = 0;
+    let mut cache_hit_rates: Vec<f64> = Vec::new();
     let mut ttft_values: Vec<f64> = Vec::new();
     let mut tpot_values: Vec<f64> = Vec::new();
     let mut itl_values: Vec<f64> = Vec::new();
     let mut request_duration_values: Vec<f64> = Vec::new();
     let mut tokens_per_request: Vec<u32> = Vec::new();
     let mut verification_time_values: Vec<f64> = Vec::new();
+    let mut f1_scores: Vec<f64> = Vec::new();
+    let mut rouge_l_scores: Vec<f64> = Vec::new();
+    let mut quality_metrics_count = 0;
     let mut sample_prompts: Vec<String> = Vec::new();
     // Audio/image metrics
     let mut audio_input_requests = 0;
@@ -1856,6 +2458,28 @@ pub async fn run_benchmark(
             // Collect sample prompts (first 5 unique ones)
             if sample_prompts.len() < 5 && !sample_prompts.contains(&metrics.prompt_preview) {
                 sample_prompts.push(metrics.prompt_preview.clone());
+            }
+
+            // Track cache metrics if available
+            if let Some(cache_metrics) = &metrics.cache_metrics {
+                if is_cache_hit(cache_metrics) {
+                    cache_hits += 1;
+                } else {
+                    cache_misses += 1;
+                }
+                cache_token_savings += calculate_cache_token_savings(cache_metrics);
+                cache_hit_rates.push(cache_metrics.cache_hit_rate);
+            }
+
+            // Track quality metrics if available
+            if let Some(quality_metrics) = &metrics.quality_metrics {
+                if let Some(f1) = quality_metrics.f1_score {
+                    f1_scores.push(f1);
+                }
+                if let Some(rouge_l) = quality_metrics.rouge_l_score {
+                    rouge_l_scores.push(rouge_l);
+                }
+                quality_metrics_count += 1;
             }
 
             // Track verification stats
@@ -1905,6 +2529,17 @@ pub async fn run_benchmark(
     verification_time_values.sort_by(|a, b| a.partial_cmp(b).unwrap());
     image_generation_time_values.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
+    // Calculate average cache hit rate
+    let avg_cache_hit_rate = if cache_hit_rates.is_empty() {
+        0.0
+    } else {
+        cache_hit_rates.iter().sum::<f64>() / cache_hit_rates.len() as f64
+    };
+
+    // Calculate average quality scores
+    let avg_f1_score = average_f1_scores(&f1_scores);
+    let avg_rouge_l_score = average_rouge_l_scores(&rouge_l_scores);
+
     // Log summary warning if many requests didn't get usage stats
     if requests_with_usage < successful {
         let missing = successful - requests_with_usage;
@@ -1929,12 +2564,21 @@ pub async fn run_benchmark(
         verification_attempted,
         verification_success,
         verification_failed,
+        cache_hits,
+        cache_misses,
+        avg_cache_hit_rate,
+        cache_token_savings,
+        avg_f1_score,
+        avg_rouge_l_score,
+        quality_metrics_count,
         ttft_values,
         tpot_values,
         itl_values,
         request_duration_values,
         tokens_per_request,
         verification_time_values,
+        f1_scores,
+        rouge_l_scores,
         sample_prompts,
         request_type: config.request_type.clone(),
         audio_input_requests,
@@ -1945,6 +2589,145 @@ pub async fn run_benchmark(
         total_image_bytes,
         image_generation_time_values,
     })
+}
+
+/// Aggregate results from multiple phases
+pub fn aggregate_phase_results(phase_results: &[BenchmarkResult]) -> BenchmarkResult {
+    if phase_results.is_empty() {
+        return BenchmarkResult {
+            name: Some("Aggregated Results".to_string()),
+            successful_requests: 0,
+            failed_requests: 0,
+            total_requests: 0,
+            requests_with_usage: 0,
+            concurrency: 0,
+            rps_configured: 0.0,
+            duration_secs: 0.0,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            total_chunks: 0,
+            verification_attempted: 0,
+            verification_success: 0,
+            verification_failed: 0,
+            cache_hits: 0,
+            cache_misses: 0,
+            avg_cache_hit_rate: 0.0,
+            cache_token_savings: 0,
+            avg_f1_score: 0.0,
+            avg_rouge_l_score: 0.0,
+            quality_metrics_count: 0,
+            ttft_values: Vec::new(),
+            tpot_values: Vec::new(),
+            itl_values: Vec::new(),
+            request_duration_values: Vec::new(),
+            tokens_per_request: Vec::new(),
+            verification_time_values: Vec::new(),
+            f1_scores: Vec::new(),
+            rouge_l_scores: Vec::new(),
+            sample_prompts: Vec::new(),
+            request_type: RequestType::ChatCompletion,
+            audio_input_requests: 0,
+            audio_output_requests: 0,
+            total_audio_input_bytes: 0,
+            total_audio_output_bytes: 0,
+            total_images_generated: 0,
+            total_image_bytes: 0,
+            image_generation_time_values: Vec::new(),
+        };
+    }
+
+    let mut aggregated = BenchmarkResult {
+        name: Some("Aggregated Results".to_string()),
+        successful_requests: 0,
+        failed_requests: 0,
+        total_requests: 0,
+        requests_with_usage: 0,
+        concurrency: phase_results[0].concurrency,
+        rps_configured: phase_results[0].rps_configured,
+        duration_secs: 0.0,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
+        total_chunks: 0,
+        verification_attempted: 0,
+        verification_success: 0,
+        verification_failed: 0,
+        cache_hits: 0,
+        cache_misses: 0,
+        avg_cache_hit_rate: 0.0,
+        cache_token_savings: 0,
+        avg_f1_score: 0.0,
+        avg_rouge_l_score: 0.0,
+        quality_metrics_count: 0,
+        ttft_values: Vec::new(),
+        tpot_values: Vec::new(),
+        itl_values: Vec::new(),
+        request_duration_values: Vec::new(),
+        tokens_per_request: Vec::new(),
+        verification_time_values: Vec::new(),
+        f1_scores: Vec::new(),
+        rouge_l_scores: Vec::new(),
+        sample_prompts: Vec::new(),
+        request_type: RequestType::ChatCompletion,
+        audio_input_requests: 0,
+        audio_output_requests: 0,
+        total_audio_input_bytes: 0,
+        total_audio_output_bytes: 0,
+        total_images_generated: 0,
+        total_image_bytes: 0,
+        image_generation_time_values: Vec::new(),
+    };
+
+    for result in phase_results {
+        aggregated.successful_requests += result.successful_requests;
+        aggregated.failed_requests += result.failed_requests;
+        aggregated.total_requests += result.total_requests;
+        aggregated.requests_with_usage += result.requests_with_usage;
+        aggregated.duration_secs += result.duration_secs;
+        aggregated.total_input_tokens += result.total_input_tokens;
+        aggregated.total_output_tokens += result.total_output_tokens;
+        aggregated.total_chunks += result.total_chunks;
+        aggregated.verification_attempted += result.verification_attempted;
+        aggregated.verification_success += result.verification_success;
+        aggregated.verification_failed += result.verification_failed;
+        aggregated.cache_hits += result.cache_hits;
+        aggregated.cache_misses += result.cache_misses;
+        aggregated.cache_token_savings += result.cache_token_savings;
+
+        aggregated.ttft_values.extend(result.ttft_values.clone());
+        aggregated.tpot_values.extend(result.tpot_values.clone());
+        aggregated.itl_values.extend(result.itl_values.clone());
+        aggregated.request_duration_values
+            .extend(result.request_duration_values.clone());
+        aggregated.tokens_per_request.extend(result.tokens_per_request.clone());
+        aggregated.verification_time_values
+            .extend(result.verification_time_values.clone());
+        aggregated.f1_scores.extend(result.f1_scores.clone());
+        aggregated.rouge_l_scores.extend(result.rouge_l_scores.clone());
+        aggregated.quality_metrics_count += result.quality_metrics_count;
+
+        // Collect unique sample prompts
+        for prompt in &result.sample_prompts {
+            if aggregated.sample_prompts.len() < 5 && !aggregated.sample_prompts.contains(prompt) {
+                aggregated.sample_prompts.push(prompt.clone());
+            }
+        }
+    }
+
+    // Recalculate average cache hit rate
+    if aggregated.cache_hits + aggregated.cache_misses > 0 {
+        aggregated.avg_cache_hit_rate = aggregated.cache_hits as f64
+            / (aggregated.cache_hits + aggregated.cache_misses) as f64;
+    }
+
+    // Recalculate average quality scores
+    if !aggregated.f1_scores.is_empty() {
+        aggregated.avg_f1_score = average_f1_scores(&aggregated.f1_scores);
+    }
+    if !aggregated.rouge_l_scores.is_empty() {
+        aggregated.avg_rouge_l_score = average_rouge_l_scores(&aggregated.rouge_l_scores);
+    }
+
+    aggregated
 }
 
 /// Run a complete scenario (multiple providers)
@@ -2012,6 +2795,71 @@ pub async fn run_scenario(scenario: &Scenario) -> Result<Vec<BenchmarkResult>> {
 
         let result = run_benchmark(&config, prompts.clone(), scenario.num_requests).await?;
         results.push(result);
+    }
+
+    Ok(results)
+}
+
+/// Run a multi-phase scenario with warmup and query phases
+pub async fn run_multi_phase_scenario(scenario: &MultiPhaseScenario) -> Result<Vec<BenchmarkResult>> {
+    info!("Running multi-phase scenario: {}", scenario.name);
+    if let Some(desc) = &scenario.description {
+        info!("Description: {}", desc);
+    }
+
+    // Load dataset once for all providers
+    let prompts = load_dataset(&scenario.dataset, 1000).await?;
+
+    if prompts.is_empty() {
+        return Err(anyhow!("No prompts loaded from dataset"));
+    }
+
+    info!("Loaded {} prompts", prompts.len());
+
+    let mut results = Vec::new();
+
+    for provider in &scenario.providers {
+        // Use provider-specific model if set, otherwise use scenario's model
+        let model = provider
+            .model
+            .clone()
+            .unwrap_or_else(|| scenario.model.clone());
+
+        info!(
+            "Testing provider: {} ({}) with model: {} (multi-phase)",
+            provider.name, provider.base_url, model
+        );
+
+        let config = BenchmarkConfig {
+            name: Some(provider.name.clone()),
+            base_url: provider.base_url.clone(),
+            api_key: provider.api_key.clone(),
+            model,
+            max_tokens: scenario.max_tokens,
+            concurrency: 1, // Will be overridden per-phase
+            rps: 100.0, // Will be overridden per-phase
+            timeout_secs: scenario.timeout_secs,
+            disable_prewarm: false,
+            verify: false,
+            random_prompt_selection: false,
+            random_seed: None,
+            request_type: RequestType::ChatCompletion,
+            image_config: None,
+            audio_input: None,
+            audio_output: false,
+            image_output_dir: None,
+        };
+
+        let phase_results = run_multi_phase_benchmark(
+            &config,
+            prompts.clone(),
+            scenario.phases.clone(),
+            None,
+        )
+        .await?;
+
+        let aggregated = aggregate_phase_results(&phase_results);
+        results.push(aggregated);
     }
 
     Ok(results)
@@ -2704,12 +3552,29 @@ pub fn expand_scenario_env_vars(mut scenario: Scenario) -> Result<Scenario> {
     Ok(scenario)
 }
 
+pub fn expand_multi_phase_scenario_env_vars(mut scenario: MultiPhaseScenario) -> Result<MultiPhaseScenario> {
+    for provider in &mut scenario.providers {
+        provider.api_key = expand_env_vars(&provider.api_key)?;
+        provider.base_url = expand_env_vars(&provider.base_url)?;
+    }
+    Ok(scenario)
+}
+
 pub fn load_scenario_from_file(path: &str) -> Result<Scenario> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read scenario file: {}", path))?;
     let scenario: Scenario = serde_yaml::from_str(&content)
         .with_context(|| format!("Failed to parse scenario file: {}", path))?;
     expand_scenario_env_vars(scenario)
+}
+
+/// Load a multi-phase scenario from a YAML file
+pub fn load_multi_phase_scenario_from_file(path: &str) -> Result<MultiPhaseScenario> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read scenario file: {}", path))?;
+    let scenario: MultiPhaseScenario = serde_yaml::from_str(&content)
+        .with_context(|| format!("Failed to parse multi-phase scenario file: {}", path))?;
+    expand_multi_phase_scenario_env_vars(scenario)
 }
 
 /// Generate a timestamped output filename

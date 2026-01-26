@@ -60,6 +60,9 @@ csv = "1"
 # Regex for parsing
 regex = "1"
 
+# Async trait support
+async-trait = "0.1"
+
 # Base64 encoding for audio data
 base64 = "0.22"
 

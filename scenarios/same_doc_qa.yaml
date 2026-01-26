@@ -1,0 +1,29 @@
+name: "Same-Document-QA (DeepSeek with LMCache vs without LMCache)"
+description: "Benchmark comparing DeepSeek with LMCache vs DeepSeek without LMCache on same document with 97 questions"
+model: "deepseek-ai/DeepSeek-V3.1"
+
+providers:
+  - name: "with-lmcache"
+    base_url: "https://cloud-api.near.ai/v1"
+    api_key: "${NEARAI_API_KEY}"
+  - name: "without-lmcache"
+    base_url: "https://cloud-api.near.ai/v1"
+    api_key: "${NEARAI_API_KEY}"
+
+dataset:
+  type: longdocqa
+  documents_path: "./datasets/single_doc.jsonl"
+  doc_token_length: 15000
+
+phases:
+  - phase: warmup
+    num_requests: 20
+    concurrency: 1
+    rps: 1
+  - phase: query
+    num_requests: 100
+    concurrency: 10
+    rps: 5
+
+max_tokens: 256
+timeout_secs: 600
