@@ -1382,14 +1382,14 @@ async fn load_multi_round_qa_dataset(path: &str, num_requests: usize) -> Result<
             if let Some(system_prompt) = &entry.system_prompt {
                 messages.push(Message {
                     role: "system".to_string(),
-                    content: system_prompt.clone(),
+                    content: MessageContent::Text(system_prompt.clone()),
                 });
             }
 
             // Add the question as user message
             messages.push(Message {
                 role: "user".to_string(),
-                content: entry.question.clone(),
+                content: MessageContent::Text(entry.question.clone()),
             });
 
             messages
@@ -1425,14 +1425,14 @@ async fn load_rag_dataset(path: &str, num_requests: usize) -> Result<Vec<Vec<Mes
             vec![
                 Message {
                     role: "system".to_string(),
-                    content: "Answer the following question based on the provided document.".to_string(),
+                    content: MessageContent::Text("Answer the following question based on the provided document.".to_string()),
                 },
                 Message {
                     role: "user".to_string(),
-                    content: format!(
+                    content: MessageContent::Text(format!(
                         "Document:\n{}\n\nQuestion: {}",
                         entry.document, entry.question
-                    ),
+                    )),
                 },
             ]
         })
@@ -1469,14 +1469,14 @@ async fn load_long_doc_qa_dataset(path: &str, num_requests: usize) -> Result<Vec
             prompts.push(vec![
                 Message {
                     role: "system".to_string(),
-                    content: "Answer the following question based on the document.".to_string(),
+                    content: MessageContent::Text("Answer the following question based on the document.".to_string()),
                 },
                 Message {
                     role: "user".to_string(),
-                    content: format!(
+                    content: MessageContent::Text(format!(
                         "Document:\n{}\n\nQuestion: {}",
                         entry.document, question
-                    ),
+                    )),
                 },
             ]);
         }
@@ -1511,16 +1511,16 @@ async fn load_multi_doc_qa_dataset(path: &str, num_requests: usize) -> Result<Ve
             vec![
                 Message {
                     role: "system".to_string(),
-                    content: "Answer the following question based on the provided documents."
-                        .to_string(),
+                    content: MessageContent::Text("Answer the following question based on the provided documents."
+                        .to_string()),
                 },
                 Message {
                     role: "user".to_string(),
-                    content: format!(
+                    content: MessageContent::Text(format!(
                         "Documents: {}\n\nQuestion: {}",
                         entry.document_ids.join(", "),
                         entry.question
-                    ),
+                    )),
                 },
             ]
         })
@@ -1777,6 +1777,8 @@ async fn send_image_generation_request(
         verification_success,
         verification_time_ms,
         prompt_preview,
+        cache_metrics: None,
+        quality_metrics: None,
         request_type: RequestType::ImageGeneration,
         audio_input_size_bytes: None,
         audio_output_size_bytes: None,
@@ -2623,6 +2625,14 @@ pub fn aggregate_phase_results(phase_results: &[BenchmarkResult]) -> BenchmarkRe
             f1_scores: Vec::new(),
             rouge_l_scores: Vec::new(),
             sample_prompts: Vec::new(),
+            request_type: RequestType::ChatCompletion,
+            audio_input_requests: 0,
+            audio_output_requests: 0,
+            total_audio_input_bytes: 0,
+            total_audio_output_bytes: 0,
+            total_images_generated: 0,
+            total_image_bytes: 0,
+            image_generation_time_values: Vec::new(),
         };
     }
 
@@ -2657,6 +2667,14 @@ pub fn aggregate_phase_results(phase_results: &[BenchmarkResult]) -> BenchmarkRe
         f1_scores: Vec::new(),
         rouge_l_scores: Vec::new(),
         sample_prompts: Vec::new(),
+        request_type: RequestType::ChatCompletion,
+        audio_input_requests: 0,
+        audio_output_requests: 0,
+        total_audio_input_bytes: 0,
+        total_audio_output_bytes: 0,
+        total_images_generated: 0,
+        total_image_bytes: 0,
+        image_generation_time_values: Vec::new(),
     };
 
     for result in phase_results {
@@ -2825,6 +2843,11 @@ pub async fn run_multi_phase_scenario(scenario: &MultiPhaseScenario) -> Result<V
             verify: false,
             random_prompt_selection: false,
             random_seed: None,
+            request_type: RequestType::ChatCompletion,
+            image_config: None,
+            audio_input: None,
+            audio_output: false,
+            image_output_dir: None,
         };
 
         let phase_results = run_multi_phase_benchmark(

@@ -3,7 +3,7 @@
 //! This module provides trait-based prompt construction for various LMCache benchmarks,
 //! allowing customization of how prompts are formatted for different use cases.
 
-use crate::{ConversationManager, Message};
+use crate::{ConversationManager, Message, MessageContent};
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use std::collections::HashMap;
@@ -117,7 +117,7 @@ impl PromptBuilder for RagPromptBuilder {
     async fn build_prompt(&self, context: &PromptContext) -> crate::Result<Vec<Message>> {
         let mut messages = vec![Message {
             role: "system".to_string(),
-            content: self.system_prompt.clone(),
+            content: MessageContent::Text(self.system_prompt.clone()),
         }];
 
         // Combine all documents
@@ -143,7 +143,7 @@ impl PromptBuilder for RagPromptBuilder {
 
         messages.push(Message {
             role: "user".to_string(),
-            content: user_content,
+            content: MessageContent::Text(user_content),
         });
 
         Ok(messages)
@@ -195,7 +195,7 @@ impl PromptBuilder for LongDocPromptBuilder {
     async fn build_prompt(&self, context: &PromptContext) -> crate::Result<Vec<Message>> {
         let mut messages = vec![Message {
             role: "system".to_string(),
-            content: self.system_prompt.clone(),
+            content: MessageContent::Text(self.system_prompt.clone()),
         }];
 
         let doc_text = if context.documents.is_empty() {
@@ -218,7 +218,7 @@ impl PromptBuilder for LongDocPromptBuilder {
 
         messages.push(Message {
             role: "user".to_string(),
-            content: user_content,
+            content: MessageContent::Text(user_content),
         });
 
         Ok(messages)
@@ -288,7 +288,7 @@ impl PromptBuilder for MultiDocPromptBuilder {
     async fn build_prompt(&self, context: &PromptContext) -> crate::Result<Vec<Message>> {
         let mut messages = vec![Message {
             role: "system".to_string(),
-            content: self.system_prompt.clone(),
+            content: MessageContent::Text(self.system_prompt.clone()),
         }];
 
         // Limit documents if max_docs is set
@@ -319,7 +319,7 @@ impl PromptBuilder for MultiDocPromptBuilder {
 
         messages.push(Message {
             role: "user".to_string(),
-            content: user_content,
+            content: MessageContent::Text(user_content),
         });
 
         Ok(messages)
@@ -380,7 +380,7 @@ impl PromptBuilder for MultiRoundPromptBuilder {
     async fn build_prompt(&self, context: &PromptContext) -> crate::Result<Vec<Message>> {
         let mut messages = vec![Message {
             role: "system".to_string(),
-            content: self.system_prompt.clone(),
+            content: MessageContent::Text(self.system_prompt.clone()),
         }];
 
         // If we have a conversation manager and user_id, get history
@@ -397,7 +397,7 @@ impl PromptBuilder for MultiRoundPromptBuilder {
         // Add current question
         messages.push(Message {
             role: "user".to_string(),
-            content: context.query.clone(),
+            content: MessageContent::Text(context.query.clone()),
         });
 
         Ok(messages)
