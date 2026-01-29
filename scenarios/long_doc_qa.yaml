@@ -1,0 +1,30 @@
+name: "Long Document QA Benchmark"
+description: "Benchmark with very long documents (~20k tokens) and cache testing"
+model: "deepseek-ai/DeepSeek-V3.1"
+
+providers:
+  - name: "without-lmcache"
+    base_url: "https://cloud-api.near.ai/v1"
+    api_key: "${NEARAI_API_KEY}"
+  - name: "with-lmcache"
+    base_url: "https://cloud-api.near.ai/v1"
+    api_key: "${NEARAI_API_KEY}"
+
+dataset:
+  type: longdocqa
+  documents_path: "./datasets/long_doc_qa.jsonl"
+  doc_token_length: 20000
+  warmup_rounds: 2
+
+phases:
+  - phase: warmup
+    num_requests: 20
+    concurrency: 1
+    rps: 1
+  - phase: query
+    num_requests: 100
+    concurrency: 5
+    rps: 5
+
+max_tokens: 256
+timeout_secs: 600

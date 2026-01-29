@@ -1,0 +1,97 @@
+{"id": "q_1", "question": "What is artificial intelligence?"}
+{"id": "q_2", "question": "What are the main goals of AI systems?"}
+{"id": "q_3", "question": "How has AI evolved over time?"}
+{"id": "q_4", "question": "What is machine learning?"}
+{"id": "q_5", "question": "How does machine learning differ from traditional programming?"}
+{"id": "q_6", "question": "What are supervised and unsupervised learning?"}
+{"id": "q_7", "question": "What is reinforcement learning?"}
+{"id": "q_8", "question": "What is deep learning?"}
+{"id": "q_9", "question": "How do neural networks work?"}
+{"id": "q_10", "question": "What are Convolutional Neural Networks used for?"}
+{"id": "q_11", "question": "What are Recurrent Neural Networks?"}
+{"id": "q_12", "question": "What is the transformer architecture?"}
+{"id": "q_13", "question": "What is LSTM and GRU?"}
+{"id": "q_14", "question": "How do activation functions work?"}
+{"id": "q_15", "question": "What is forward propagation in neural networks?"}
+{"id": "q_16", "question": "What is backpropagation?"}
+{"id": "q_17", "question": "How does gradient descent optimize weights?"}
+{"id": "q_18", "question": "What is decision tree learning?"}
+{"id": "q_19", "question": "What are Support Vector Machines?"}
+{"id": "q_20", "question": "What is ensemble learning?"}
+{"id": "q_21", "question": "What is clustering?"}
+{"id": "q_22", "question": "What is K-means clustering?"}
+{"id": "q_23", "question": "What is Principal Component Analysis?"}
+{"id": "q_24", "question": "What is anomaly detection?"}
+{"id": "q_25", "question": "How does Q-learning work?"}
+{"id": "q_26", "question": "What are policy gradients?"}
+{"id": "q_27", "question": "What is Natural Language Processing?"}
+{"id": "q_28", "question": "What is tokenization?"}
+{"id": "q_29", "question": "What are word embeddings?"}
+{"id": "q_30", "question": "What is Named Entity Recognition?"}
+{"id": "q_31", "question": "What is sentiment analysis?"}
+{"id": "q_32", "question": "What is machine translation?"}
+{"id": "q_33", "question": "How do language models generate text?"}
+{"id": "q_34", "question": "What is Computer Vision?"}
+{"id": "q_35", "question": "What is object detection?"}
+{"id": "q_36", "question": "What is image classification?"}
+{"id": "q_37", "question": "What is image segmentation?"}
+{"id": "q_38", "question": "What is face recognition?"}
+{"id": "q_39", "question": "What is pose estimation?"}
+{"id": "q_40", "question": "What is transfer learning?"}
+{"id": "q_41", "question": "What is fine-tuning?"}
+{"id": "q_42", "question": "What is domain adaptation?"}
+{"id": "q_43", "question": "What is few-shot learning?"}
+{"id": "q_44", "question": "What is zero-shot learning?"}
+{"id": "q_45", "question": "What is meta-learning?"}
+{"id": "q_46", "question": "What is Stochastic Gradient Descent?"}
+{"id": "q_47", "question": "What is the Adam optimizer?"}
+{"id": "q_48", "question": "What is learning rate scheduling?"}
+{"id": "q_49", "question": "What is regularization?"}
+{"id": "q_50", "question": "What is batch normalization?"}
+{"id": "q_51", "question": "What is dropout?"}
+{"id": "q_52", "question": "What is accuracy in classification?"}
+{"id": "q_53", "question": "What are precision and recall?"}
+{"id": "q_54", "question": "What is the F1 score?"}
+{"id": "q_55", "question": "What is ROC-AUC?"}
+{"id": "q_56", "question": "What is cross-validation?"}
+{"id": "q_57", "question": "What is hyperparameter tuning?"}
+{"id": "q_58", "question": "What is data augmentation?"}
+{"id": "q_59", "question": "What is image augmentation?"}
+{"id": "q_60", "question": "What is Bagging?"}
+{"id": "q_61", "question": "What is Random Forest?"}
+{"id": "q_62", "question": "What is Boosting?"}
+{"id": "q_63", "question": "What is Gradient Boosting?"}
+{"id": "q_64", "question": "What is stacking?"}
+{"id": "q_65", "question": "What are GPUs used for in AI?"}
+{"id": "q_66", "question": "What are TPUs?"}
+{"id": "q_67", "question": "What is distributed training?"}
+{"id": "q_68", "question": "What is data parallelism?"}
+{"id": "q_69", "question": "What is model parallelism?"}
+{"id": "q_70", "question": "What are Variational Autoencoders?"}
+{"id": "q_71", "question": "What are Generative Adversarial Networks?"}
+{"id": "q_72", "question": "What are diffusion models?"}
+{"id": "q_73", "question": "What is self-attention?"}
+{"id": "q_74", "question": "What is cross-attention?"}
+{"id": "q_75", "question": "What is multi-head attention?"}
+{"id": "q_76", "question": "What is positional encoding?"}
+{"id": "q_77", "question": "What are feature importance methods?"}
+{"id": "q_78", "question": "What are saliency maps?"}
+{"id": "q_79", "question": "What is SHAP?"}
+{"id": "q_80", "question": "What is LIME?"}
+{"id": "q_81", "question": "How does bias affect AI systems?"}
+{"id": "q_82", "question": "What is fairness in AI?"}
+{"id": "q_83", "question": "Why is privacy important in AI?"}
+{"id": "q_84", "question": "What is transparency in AI?"}
+{"id": "q_85", "question": "What is model interpretability?"}
+{"id": "q_86", "question": "What are adversarial attacks?"}
+{"id": "q_87", "question": "What is adversarial robustness?"}
+{"id": "q_88", "question": "How should AI be developed responsibly?"}
+{"id": "q_89", "question": "What ethical considerations apply to AI?"}
+{"id": "q_90", "question": "How do we ensure fair AI systems?"}
+{"id": "q_91", "question": "What are the risks of biased AI?"}
+{"id": "q_92", "question": "How can we make AI more transparent?"}
+{"id": "q_93", "question": "What accountability mechanisms should exist for AI?"}
+{"id": "q_94", "question": "How do we protect privacy in AI systems?"}
+{"id": "q_95", "question": "What is explainable AI?"}
+{"id": "q_96", "question": "How do we evaluate model fairness?"}
+{"id": "q_97", "question": "What are the implications of AI for society?"}
