@@ -661,6 +661,13 @@ pub struct RequestMetrics {
     pub image_count: u32,
     /// Total size of generated images in bytes
     pub total_image_size_bytes: u64,
+    // Reasoning/thinking metrics
+    /// Number of reasoning/thinking tokens
+    pub reasoning_tokens: u32,
+    /// Time from request start to first reasoning token (ms)
+    pub time_to_first_reasoning_token_ms: Option<f64>,
+    /// Time spent in thinking phase: from first reasoning token to first content token (ms)
+    pub thinking_time_ms: Option<f64>,
 }
 
 impl RequestMetrics {
@@ -779,6 +786,14 @@ pub struct BenchmarkResult {
     /// Image generation time values (ms) for statistics
     #[serde(skip)]
     pub image_generation_time_values: Vec<f64>,
+    // Reasoning/thinking aggregate metrics
+    /// Total reasoning/thinking tokens across all requests
+    pub total_reasoning_tokens: u64,
+    /// Number of requests that included reasoning tokens
+    pub requests_with_reasoning: usize,
+    /// Thinking time values (ms) for statistics
+    #[serde(skip)]
+    pub thinking_time_values: Vec<f64>,
 }
 
 impl BenchmarkResult {
@@ -891,6 +906,8 @@ struct ChunkChoice {
 #[derive(Debug, Deserialize)]
 struct Delta {
     content: Option<String>,
+    /// Reasoning/thinking content (e.g., from DeepSeek-R1, GLM-4, QwQ)
+    reasoning_content: Option<String>,
     /// Modality indicator for streaming (e.g., "text" or "audio")
     #[serde(default)]
     modality: Option<String>,
@@ -918,9 +935,17 @@ struct AudioOutput {
 }
 
 #[derive(Debug, Deserialize)]
+struct CompletionTokensDetails {
+    #[serde(default)]
+    reasoning_tokens: u32,
+}
+
+#[derive(Debug, Deserialize)]
 struct Usage {
     prompt_tokens: u32,
     completion_tokens: u32,
+    #[serde(default)]
+    completion_tokens_details: Option<CompletionTokensDetails>,
 }
 
 /// TEE signature response from /signature/{chat_id} endpoint
@@ -1785,6 +1810,9 @@ async fn send_image_generation_request(
         has_audio_output: false,
         image_count,
         total_image_size_bytes,
+        reasoning_tokens: 0,
+        time_to_first_reasoning_token_ms: None,
+        thinking_time_ms: None,
     })
 }
 
@@ -1829,6 +1857,11 @@ async fn send_streaming_request(
     let mut chunk_count: u32 = 0;
     let mut got_usage: bool = false;
     let mut chat_id: Option<String> = None;
+    // Reasoning/thinking tracking
+    let mut reasoning_tokens: u32 = 0;
+    let mut first_reasoning_token_time: Option<Instant> = None;
+    let mut last_reasoning_chunk_time: Option<Instant> = None;
+    let mut first_content_token_time: Option<Instant> = None;
     // Audio tracking
     let audio_input_size_bytes: Option<u64> = audio_input_size;
     let mut audio_output_size_bytes: Option<u64> = None;
@@ -1863,9 +1896,14 @@ async fn send_streaming_request(
                             input_tokens = usage.prompt_tokens;
                             output_tokens = usage.completion_tokens;
                             got_usage = true;
+                            if let Some(details) = &usage.completion_tokens_details {
+                                if details.reasoning_tokens > 0 {
+                                    reasoning_tokens = details.reasoning_tokens;
+                                }
+                            }
                             debug!(
-                                "Got usage stats: input={}, output={} (previous: {}), chunk_count={}",
-                                input_tokens, output_tokens, previous_output, chunk_count
+                                "Got usage stats: input={}, output={} (previous: {}), reasoning={}, chunk_count={}",
+                                input_tokens, output_tokens, previous_output, reasoning_tokens, chunk_count
                             );
                         }
 
@@ -1873,25 +1911,51 @@ async fn send_streaming_request(
                         if let Some(choice) = chunk.choices.first() {
                             // Handle streaming delta content
                             if let Some(delta) = &choice.delta {
-                                if let Some(content) = &delta.content {
-                                    if !content.is_empty() {
-                                        output_chars += content.len();
+                                // Treat reasoning_content as regular content for all metrics
+                                let effective_content = match (&delta.reasoning_content, &delta.content) {
+                                    (Some(r), _) if !r.is_empty() => Some(r.as_str()),
+                                    (_, Some(c)) if !c.is_empty() => Some(c.as_str()),
+                                    _ => None,
+                                };
 
-                                        if first_token_time.is_none() {
-                                            first_token_time = Some(now);
-                                        } else {
-                                            let icl =
-                                                now.duration_since(last_chunk_time).as_secs_f64()
-                                                    * 1000.0;
-                                            inter_chunk_latencies.push(icl);
+                                // Track reasoning tokens separately for reporting
+                                if let Some(reasoning) = &delta.reasoning_content {
+                                    if !reasoning.is_empty() {
+                                        if first_reasoning_token_time.is_none() {
+                                            first_reasoning_token_time = Some(now);
                                         }
-                                        last_chunk_time = now;
-
-                                        // Count chunks with content as fallback
-                                        // (will be overridden by usage if available)
+                                        last_reasoning_chunk_time = Some(now);
                                         if !got_usage {
-                                            output_tokens += 1;
+                                            reasoning_tokens += 1;
                                         }
+                                    }
+                                }
+
+                                // Track first non-reasoning content token for thinking_time calculation
+                                if let Some(content) = &delta.content {
+                                    if !content.is_empty() && first_content_token_time.is_none() {
+                                        first_content_token_time = Some(now);
+                                    }
+                                }
+
+                                // Apply unified metrics for any effective content (reasoning or regular)
+                                if let Some(text) = effective_content {
+                                    output_chars += text.len();
+
+                                    if first_token_time.is_none() {
+                                        first_token_time = Some(now);
+                                    } else {
+                                        let icl =
+                                            now.duration_since(last_chunk_time).as_secs_f64()
+                                                * 1000.0;
+                                        inter_chunk_latencies.push(icl);
+                                    }
+                                    last_chunk_time = now;
+
+                                    // Count chunks with content as fallback
+                                    // (will be overridden by usage if available)
+                                    if !got_usage {
+                                        output_tokens += 1;
                                     }
                                 }
 
@@ -1988,6 +2052,19 @@ async fn send_streaming_request(
         .map(|t| t.duration_since(start_time).as_secs_f64() * 1000.0)
         .unwrap_or(total_time.as_secs_f64() * 1000.0);
 
+    // Compute reasoning/thinking timing metrics
+    let time_to_first_reasoning_token_ms = first_reasoning_token_time
+        .map(|t| t.duration_since(start_time).as_secs_f64() * 1000.0);
+
+    let thinking_time_ms = match (first_reasoning_token_time, first_content_token_time) {
+        (Some(reasoning_start), Some(content_start)) => {
+            Some(content_start.duration_since(reasoning_start).as_secs_f64() * 1000.0)
+        }
+        (Some(reasoning_start), None) => last_reasoning_chunk_time
+            .map(|end| end.duration_since(reasoning_start).as_secs_f64() * 1000.0),
+        _ => None,
+    };
+
     // Extract cache metrics from response headers
     let cache_metrics = extract_cache_metrics_from_headers(&response_headers, input_tokens, output_tokens);
 
@@ -2013,6 +2090,9 @@ async fn send_streaming_request(
         has_audio_output,
         image_count: 0,
         total_image_size_bytes: 0,
+        reasoning_tokens,
+        time_to_first_reasoning_token_ms,
+        thinking_time_ms,
     })
 }
 
@@ -2387,6 +2467,9 @@ async fn run_benchmark_internal(
                             has_audio_output: false,
                             image_count: 0,
                             total_image_size_bytes: 0,
+                            reasoning_tokens: 0,
+                            time_to_first_reasoning_token_ms: None,
+                            thinking_time_ms: None,
                         })
                         .await;
                 }
@@ -2441,6 +2524,9 @@ async fn run_benchmark_internal(
     let mut total_images_generated: u64 = 0;
     let mut total_image_bytes: u64 = 0;
     let mut image_generation_time_values: Vec<f64> = Vec::new();
+    let mut total_reasoning_tokens: u64 = 0;
+    let mut requests_with_reasoning: usize = 0;
+    let mut thinking_time_values: Vec<f64> = Vec::new();
 
     while let Ok(metrics) = rx.recv().await {
         if metrics.success {
@@ -2517,6 +2603,15 @@ async fn run_benchmark_internal(
                 total_image_bytes += metrics.total_image_size_bytes;
                 image_generation_time_values.push(metrics.total_time_ms);
             }
+
+            // Track reasoning/thinking metrics
+            if metrics.reasoning_tokens > 0 {
+                total_reasoning_tokens += metrics.reasoning_tokens as u64;
+                requests_with_reasoning += 1;
+            }
+            if let Some(thinking_time) = metrics.thinking_time_ms {
+                thinking_time_values.push(thinking_time);
+            }
         } else {
             failed += 1;
         }
@@ -2528,6 +2623,7 @@ async fn run_benchmark_internal(
     request_duration_values.sort_by(|a, b| a.partial_cmp(b).unwrap());
     verification_time_values.sort_by(|a, b| a.partial_cmp(b).unwrap());
     image_generation_time_values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    thinking_time_values.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
     // Calculate average cache hit rate
     let avg_cache_hit_rate = if cache_hit_rates.is_empty() {
@@ -2588,6 +2684,9 @@ async fn run_benchmark_internal(
         total_images_generated,
         total_image_bytes,
         image_generation_time_values,
+        total_reasoning_tokens,
+        requests_with_reasoning,
+        thinking_time_values,
     })
 }
 
@@ -2633,6 +2732,9 @@ pub fn aggregate_phase_results(phase_results: &[BenchmarkResult]) -> BenchmarkRe
             total_images_generated: 0,
             total_image_bytes: 0,
             image_generation_time_values: Vec::new(),
+            total_reasoning_tokens: 0,
+            requests_with_reasoning: 0,
+            thinking_time_values: Vec::new(),
         };
     }
 
@@ -2675,6 +2777,9 @@ pub fn aggregate_phase_results(phase_results: &[BenchmarkResult]) -> BenchmarkRe
         total_images_generated: 0,
         total_image_bytes: 0,
         image_generation_time_values: Vec::new(),
+        total_reasoning_tokens: 0,
+        requests_with_reasoning: 0,
+        thinking_time_values: Vec::new(),
     };
 
     for result in phase_results {
@@ -2704,6 +2809,11 @@ pub fn aggregate_phase_results(phase_results: &[BenchmarkResult]) -> BenchmarkRe
         aggregated.f1_scores.extend(result.f1_scores.clone());
         aggregated.rouge_l_scores.extend(result.rouge_l_scores.clone());
         aggregated.quality_metrics_count += result.quality_metrics_count;
+        aggregated.total_reasoning_tokens += result.total_reasoning_tokens;
+        aggregated.requests_with_reasoning += result.requests_with_reasoning;
+        aggregated
+            .thinking_time_values
+            .extend(result.thinking_time_values.clone());
 
         // Collect unique sample prompts
         for prompt in &result.sample_prompts {
@@ -3013,6 +3123,16 @@ pub fn print_result(result: &BenchmarkResult) {
         "Total generated tokens:                  {}",
         result.total_output_tokens
     );
+    if result.total_reasoning_tokens > 0 {
+        println!(
+            "Total reasoning tokens:                  {}",
+            result.total_reasoning_tokens
+        );
+        println!(
+            "Requests with reasoning:                 {}/{}",
+            result.requests_with_reasoning, result.successful_requests
+        );
+    }
     println!(
         "Total chunks received:                   {}",
         result.total_chunks
@@ -3080,6 +3200,35 @@ pub fn print_result(result: &BenchmarkResult) {
         println!(
             "P100 TTFT (ms):                          {:.2}",
             percentile(&result.ttft_values, 100.0)
+        );
+    }
+
+    if !result.thinking_time_values.is_empty() {
+        println!("----------Thinking/Reasoning Time-----------------");
+        println!("(Time from first reasoning token to first content token)");
+        println!(
+            "Mean Thinking Time (ms):                 {:.2}",
+            mean(&result.thinking_time_values)
+        );
+        println!(
+            "Median Thinking Time (ms):               {:.2}",
+            median(&result.thinking_time_values)
+        );
+        println!(
+            "P90 Thinking Time (ms):                  {:.2}",
+            percentile(&result.thinking_time_values, 90.0)
+        );
+        println!(
+            "P95 Thinking Time (ms):                  {:.2}",
+            percentile(&result.thinking_time_values, 95.0)
+        );
+        println!(
+            "P99 Thinking Time (ms):                  {:.2}",
+            percentile(&result.thinking_time_values, 99.0)
+        );
+        println!(
+            "P100 Thinking Time (ms):                 {:.2}",
+            percentile(&result.thinking_time_values, 100.0)
         );
     }
 
@@ -3423,6 +3572,30 @@ pub fn print_comparison(results: &[BenchmarkResult]) {
         |v: f64| format!("{:.1} ms", v),
         true
     );
+
+    // Thinking time comparison (only if any result has reasoning tokens)
+    let any_reasoning = results.iter().any(|r| r.total_reasoning_tokens > 0);
+    if any_reasoning {
+        print_row!(
+            "Avg Thinking Time (ms)",
+            results
+                .iter()
+                .map(|r| {
+                    if r.thinking_time_values.is_empty() {
+                        0.0
+                    } else {
+                        mean(&r.thinking_time_values)
+                    }
+                })
+                .collect(),
+            |v: f64| if v > 0.0 {
+                format!("{:.0} ms", v)
+            } else {
+                "-".to_string()
+            },
+            true
+        );
+    }
 
     // Avg Tokens per Request (no winner - informational)
     print!("{:<width$}", "Avg Tokens/Request", width = metric_width);
@@ -3775,6 +3948,18 @@ fn write_result_to_file<W: std::io::Write>(file: &mut W, result: &BenchmarkResul
         "Total generated tokens:                  {}",
         result.total_output_tokens
     )?;
+    if result.total_reasoning_tokens > 0 {
+        writeln!(
+            file,
+            "Total reasoning tokens:                  {}",
+            result.total_reasoning_tokens
+        )?;
+        writeln!(
+            file,
+            "Requests with reasoning:                 {}/{}",
+            result.requests_with_reasoning, result.successful_requests
+        )?;
+    }
     writeln!(
         file,
         "Total chunks received:                   {}",
@@ -3854,6 +4039,41 @@ fn write_result_to_file<W: std::io::Write>(file: &mut W, result: &BenchmarkResul
             file,
             "P100 TTFT (ms):                          {:.2}",
             percentile(&result.ttft_values, 100.0)
+        )?;
+    }
+
+    if !result.thinking_time_values.is_empty() {
+        writeln!(file, "----------Thinking/Reasoning Time-----------------")?;
+        writeln!(file, "(Time from first reasoning token to first content token)")?;
+        writeln!(
+            file,
+            "Mean Thinking Time (ms):                 {:.2}",
+            mean(&result.thinking_time_values)
+        )?;
+        writeln!(
+            file,
+            "Median Thinking Time (ms):               {:.2}",
+            median(&result.thinking_time_values)
+        )?;
+        writeln!(
+            file,
+            "P90 Thinking Time (ms):                  {:.2}",
+            percentile(&result.thinking_time_values, 90.0)
+        )?;
+        writeln!(
+            file,
+            "P95 Thinking Time (ms):                  {:.2}",
+            percentile(&result.thinking_time_values, 95.0)
+        )?;
+        writeln!(
+            file,
+            "P99 Thinking Time (ms):                  {:.2}",
+            percentile(&result.thinking_time_values, 99.0)
+        )?;
+        writeln!(
+            file,
+            "P100 Thinking Time (ms):                 {:.2}",
+            percentile(&result.thinking_time_values, 100.0)
         )?;
     }
 
@@ -4130,6 +4350,30 @@ fn write_comparison_to_file<W: std::io::Write>(
         |v: f64| format!("{:.1} ms", v),
         true
     );
+
+    let any_reasoning = results.iter().any(|r| r.total_reasoning_tokens > 0);
+    if any_reasoning {
+        write_row!(
+            "Avg Thinking Time (ms)",
+            results
+                .iter()
+                .map(|r| {
+                    if r.thinking_time_values.is_empty() {
+                        0.0
+                    } else {
+                        mean(&r.thinking_time_values)
+                    }
+                })
+                .collect(),
+            |v: f64| if v > 0.0 {
+                format!("{:.0} ms", v)
+            } else {
+                "-".to_string()
+            },
+            true
+        );
+    }
+
     write_row!(
         "Avg Total Duration (ms)",
         results.iter().map(|r| r.avg_request_duration()).collect(),
