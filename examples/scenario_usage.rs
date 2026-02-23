@@ -1,4 +1,4 @@
-use genai_benchmark::{run_multi_phase_scenario, load_multi_phase_scenario_from_file};
+use genai_benchmark::{load_multi_phase_scenario_from_file, run_multi_phase_scenario};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -7,7 +7,7 @@ async fn main() -> anyhow::Result<()> {
 
     println!("Running scenario: {}", scenario.name);
     if let Some(desc) = &scenario.description {
-        println!("Description: {}", desc);
+        println!("Description: {desc}");
     }
 
     // Execute the scenario against all configured providers
