@@ -7,17 +7,17 @@ pub mod quality_metrics;
 
 // Re-export types for convenience
 pub use cache_metrics::{
-    extract_cache_metrics_from_headers, is_cache_hit, calculate_cache_token_savings,
+    calculate_cache_token_savings, extract_cache_metrics_from_headers, is_cache_hit,
     CacheMetricsAggregator,
 };
 pub use conversation::{ConversationManager, ConversationState};
 pub use prompt_builders::{
-    DocumentStore, PromptBuilder, PromptContext, LongDocPromptBuilder,
-    MultiDocPromptBuilder, MultiRoundPromptBuilder, RagPromptBuilder,
+    DocumentStore, LongDocPromptBuilder, MultiDocPromptBuilder, MultiRoundPromptBuilder,
+    PromptBuilder, PromptContext, RagPromptBuilder,
 };
 pub use quality_metrics::{
-    calculate_f1_score, calculate_rouge_l_score, calculate_quality_scores,
-    average_f1_scores, average_rouge_l_scores,
+    average_f1_scores, average_rouge_l_scores, calculate_f1_score, calculate_quality_scores,
+    calculate_rouge_l_score,
 };
 
 use anyhow::{anyhow, Context, Result};
@@ -43,7 +43,7 @@ fn build_http_client(concurrency: usize) -> Result<Client> {
         .tcp_nodelay(true)
         .tcp_keepalive(Duration::from_secs(60))
         .build()
-        .map_err(|e| anyhow!("Failed to build HTTP client: {}", e))
+        .map_err(|e| anyhow!("Failed to build HTTP client: {e}"))
 }
 
 // ============================================================================
@@ -191,6 +191,7 @@ fn default_max_tokens() -> u32 {
     256
 }
 fn default_concurrency() -> usize {
+    tracing::info!("Using default concurrency of 5");
     5
 }
 fn default_rps() -> f64 {
@@ -394,8 +395,10 @@ fn adjust_document_length(doc: &str, target_tokens: usize) -> String {
 /// Sampling strategy for multi-doc QA
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum SampleStrategy {
     /// Random sampling without replacement
+    #[default]
     Random,
     /// Sequential sampling
     Sequential,
@@ -405,12 +408,6 @@ pub enum SampleStrategy {
         #[serde(default)]
         hit_ratio: f64,
     },
-}
-
-impl Default for SampleStrategy {
-    fn default() -> Self {
-        SampleStrategy::Random
-    }
 }
 
 /// Benchmark phase
@@ -495,6 +492,7 @@ pub struct Scenario {
 }
 
 fn default_num_requests() -> usize {
+    tracing::info!("Using default num_requests of 100");
     100
 }
 
@@ -596,6 +594,16 @@ impl MessageContent {
             MessageContent::Parts(_) => None,
         }
     }
+
+    /// Check if the content contains a given string
+    pub fn contains(&self, s: &str) -> bool {
+        match self {
+            MessageContent::Text(text) => text.contains(s),
+            MessageContent::Parts(parts) => parts
+                .iter()
+                .any(|p| matches!(p, ContentPart::Text { text } if text.contains(s))),
+        }
+    }
 }
 
 /// Chat message
@@ -616,7 +624,7 @@ impl Message {
 
     /// Create a message with audio URL content (vLLM format) - default for compatibility
     pub fn with_audio_url(role: &str, text: &str, audio_base64: &str) -> Self {
-        let data_url = format!("data:audio/wav;base64,{}", audio_base64);
+        let data_url = format!("data:audio/wav;base64,{audio_base64}");
         Self {
             role: role.to_string(),
             content: MessageContent::Parts(vec![
@@ -710,6 +718,8 @@ pub struct RequestMetrics {
     pub verification_time_ms: f64,
     /// First 20 tokens of the prompt for reference
     pub prompt_preview: String,
+    /// First 20 tokens of the output for reference
+    pub output_preview: String,
     /// Cache metrics (optional, for LMCache benchmarks)
     #[serde(skip)]
     pub cache_metrics: Option<CacheMetrics>,
@@ -765,7 +775,20 @@ fn extract_prompt_preview(messages: &[Message], max_tokens: usize) -> String {
     let preview = preview_tokens.join(" ");
 
     if tokens.len() > max_tokens {
-        format!("{}...", preview)
+        format!("{preview}...")
+    } else {
+        preview
+    }
+}
+
+/// Extract first N tokens (words) from output text for preview
+fn extract_output_preview(text: &str, max_tokens: usize) -> String {
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    let preview_tokens: Vec<&str> = tokens.iter().take(max_tokens).copied().collect();
+    let preview = preview_tokens.join(" ");
+
+    if tokens.len() > max_tokens {
+        format!("{preview}...")
     } else {
         preview
     }
@@ -836,6 +859,9 @@ pub struct BenchmarkResult {
     /// Sample prompt previews (first 5 unique prompts)
     #[serde(skip)]
     pub sample_prompts: Vec<String>,
+    /// Sample output previews (first 5 unique outputs)
+    #[serde(skip)]
+    pub sample_outputs: Vec<String>,
     /// Type of benchmark request
     pub request_type: RequestType,
     // Audio-specific aggregate metrics
@@ -860,7 +886,7 @@ pub struct BenchmarkResult {
     pub total_reasoning_tokens: u64,
     /// Number of requests that included reasoning tokens
     pub requests_with_reasoning: usize,
-    /// Thinking time values (ms) for statistics
+    /// Thinking time values (ms) for statistics — time from first reasoning token to first content token
     #[serde(skip)]
     pub thinking_time_values: Vec<f64>,
 }
@@ -1087,6 +1113,7 @@ struct ShareGPTMessage {
 // ============================================================================
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct MultiRoundQaEntry {
     user_id: String,
     round: usize,
@@ -1096,6 +1123,7 @@ struct MultiRoundQaEntry {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct RagEntry {
     document: String,
     question: String,
@@ -1110,6 +1138,7 @@ struct LongDocQaEntry {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct MultiDocQaEntry {
     document_ids: Vec<String>,
     question: String,
@@ -1118,6 +1147,7 @@ struct MultiDocQaEntry {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct DocumentEntry {
     id: String,
     content: String,
@@ -1403,8 +1433,7 @@ pub async fn download_hf_dataset(dataset_name: &str, _split: &str) -> Result<Str
         "https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json"
     } else {
         return Err(anyhow!(
-            "Unknown dataset: {}. Please provide a direct URL or local path.",
-            dataset_name
+            "Unknown dataset: {dataset_name}. Please provide a direct URL or local path."
         ));
     };
 
@@ -1446,7 +1475,30 @@ pub async fn download_hf_dataset(dataset_name: &str, _split: &str) -> Result<Str
     Ok(cache_path)
 }
 
-/// Load prompts based on dataset configuration
+/// Load prompts based on dataset configuration.
+///
+/// # Dataset Loading Strategy
+///
+/// The `num_requests` parameter specifies how many prompts are needed. The actual
+/// number of prompts loaded depends on the dataset type:
+///
+/// - **File-based datasets** (Sharegpt, Prompts, MultiRoundQa, Rag, LongDocQa, MultiDocQa):
+///   Loads `num_requests * 2` entries to provide a buffer for filtering, deduplication,
+///   or other processing that may reduce the final count. This ensures enough prompts
+///   remain after any data quality filtering.
+///
+/// - **Generated datasets** (Synthetic, RandomTokens):
+///   Generates exactly `num_requests` prompts since there's no risk of data loss
+///   from filtering and generation is deterministic.
+///
+/// # Arguments
+///
+/// * `config` - Dataset configuration specifying the source and format
+/// * `num_requests` - Number of prompts needed for the benchmark
+///
+/// # Returns
+///
+/// A vector of conversations, where each conversation is a vector of messages.
 pub async fn load_dataset(
     config: &DatasetConfig,
     num_requests: usize,
@@ -1553,7 +1605,10 @@ async fn load_multi_round_qa_dataset(path: &str, num_requests: usize) -> Result<
         })
         .collect();
 
-    info!("Loaded {} prompts from multi-round QA dataset", prompts.len());
+    info!(
+        "Loaded {} prompts from multi-round QA dataset",
+        prompts.len()
+    );
     Ok(prompts)
 }
 
@@ -1582,7 +1637,9 @@ async fn load_rag_dataset(path: &str, num_requests: usize) -> Result<Vec<Vec<Mes
             vec![
                 Message {
                     role: "system".to_string(),
-                    content: MessageContent::Text("Answer the following question based on the provided document.".to_string()),
+                    content: MessageContent::Text(
+                        "Answer the following question based on the provided document.".to_string(),
+                    ),
                 },
                 Message {
                     role: "user".to_string(),
@@ -1688,8 +1745,10 @@ async fn load_multi_doc_qa_dataset(path: &str, num_requests: usize) -> Result<Ve
             vec![
                 Message {
                     role: "system".to_string(),
-                    content: MessageContent::Text("Answer the following question based on the provided documents."
-                        .to_string()),
+                    content: MessageContent::Text(
+                        "Answer the following question based on the provided documents."
+                            .to_string(),
+                    ),
                 },
                 Message {
                     role: "user".to_string(),
@@ -1703,7 +1762,10 @@ async fn load_multi_doc_qa_dataset(path: &str, num_requests: usize) -> Result<Ve
         })
         .collect();
 
-    info!("Loaded {} prompts from multi-document QA dataset", prompts.len());
+    info!(
+        "Loaded {} prompts from multi-document QA dataset",
+        prompts.len()
+    );
     Ok(prompts)
 }
 
@@ -1739,13 +1801,13 @@ async fn fetch_tee_signature(
         let mut req_builder = client.get(&url);
 
         if !api_key.is_empty() {
-            req_builder = req_builder.header("Authorization", format!("Bearer {}", api_key));
+            req_builder = req_builder.header("Authorization", format!("Bearer {api_key}"));
         }
 
         let response = match req_builder.send().await {
             Ok(r) => r,
             Err(e) => {
-                last_error = Some(anyhow!("Request error: {}", e));
+                last_error = Some(anyhow!("Request error: {e}"));
                 continue;
             }
         };
@@ -1766,7 +1828,7 @@ async fn fetch_tee_signature(
         let signature: SignatureResponse = match response.json().await {
             Ok(s) => s,
             Err(e) => {
-                last_error = Some(anyhow!("Failed to parse response: {}", e));
+                last_error = Some(anyhow!("Failed to parse response: {e}"));
                 continue;
             }
         };
@@ -1774,15 +1836,12 @@ async fn fetch_tee_signature(
         return Ok(signature);
     }
 
-    Err(last_error.unwrap_or_else(|| {
-        anyhow!(
-            "Failed to fetch TEE signature after {} retries",
-            MAX_RETRIES
-        )
-    }))
+    Err(last_error
+        .unwrap_or_else(|| anyhow!("Failed to fetch TEE signature after {MAX_RETRIES} retries")))
 }
 
 /// Send an image generation request and collect metrics
+#[allow(clippy::too_many_arguments)]
 async fn send_image_generation_request(
     client: &Client,
     base_url: &str,
@@ -1814,7 +1873,7 @@ async fn send_image_generation_request(
         .timeout(timeout);
 
     if !api_key.is_empty() {
-        req_builder = req_builder.header("Authorization", format!("Bearer {}", api_key));
+        req_builder = req_builder.header("Authorization", format!("Bearer {api_key}"));
     }
 
     let response = req_builder
@@ -1877,12 +1936,12 @@ async fn send_image_generation_request(
                                     request_index,
                                     safe_prompt,
                                     if img_idx > 0 {
-                                        format!("_{}", img_idx)
+                                        format!("_{img_idx}")
                                     } else {
                                         String::new()
                                     }
                                 );
-                                let filepath = format!("{}/{}", output_dir, filename);
+                                let filepath = format!("{output_dir}/{filename}");
                                 if let Err(e) = std::fs::write(&filepath, bytes) {
                                     warn!("Failed to save image to {}: {}", filepath, e);
                                 } else {
@@ -1954,6 +2013,7 @@ async fn send_image_generation_request(
         verification_success,
         verification_time_ms,
         prompt_preview,
+        output_preview: format!("[{image_count} image(s) generated]"),
         cache_metrics: None,
         quality_metrics: None,
         request_type: RequestType::ImageGeneration,
@@ -1968,6 +2028,7 @@ async fn send_image_generation_request(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn send_streaming_request(
     client: &Client,
     base_url: &str,
@@ -1988,7 +2049,7 @@ async fn send_streaming_request(
         .timeout(timeout);
 
     if !api_key.is_empty() {
-        req_builder = req_builder.header("Authorization", format!("Bearer {}", api_key));
+        req_builder = req_builder.header("Authorization", format!("Bearer {api_key}"));
     }
 
     let req_builder = req_builder.json(&request);
@@ -2004,6 +2065,7 @@ async fn send_streaming_request(
     let mut last_chunk_time = start_time;
     let mut output_tokens: u32 = 0;
     let mut output_chars: usize = 0;
+    let mut output_text = String::new();
     let mut inter_chunk_latencies: Vec<f64> = Vec::new();
     let mut input_tokens: u32 = 0;
     let mut chunk_count: u32 = 0;
@@ -2048,6 +2110,7 @@ async fn send_streaming_request(
                             input_tokens = usage.prompt_tokens;
                             output_tokens = usage.completion_tokens;
                             got_usage = true;
+                            // Extract reasoning token count from details if available
                             if let Some(details) = &usage.completion_tokens_details {
                                 if details.reasoning_tokens > 0 {
                                     reasoning_tokens = details.reasoning_tokens;
@@ -2077,6 +2140,7 @@ async fn send_streaming_request(
                                             first_reasoning_token_time = Some(now);
                                         }
                                         last_reasoning_chunk_time = Some(now);
+
                                         if !got_usage {
                                             reasoning_tokens += 1;
                                         }
@@ -2085,8 +2149,12 @@ async fn send_streaming_request(
 
                                 // Track first non-reasoning content token for thinking_time calculation
                                 if let Some(content) = &delta.content {
-                                    if !content.is_empty() && first_content_token_time.is_none() {
-                                        first_content_token_time = Some(now);
+                                    if !content.is_empty() {
+                                        output_text.push_str(content);
+                                        // Mark the first actual content token time (used for thinking_time_ms)
+                                        if first_content_token_time.is_none() {
+                                            first_content_token_time = Some(now);
+                                        }
                                     }
                                 }
 
@@ -2149,7 +2217,7 @@ async fn send_streaming_request(
             }
             Err(e) => {
                 es.close();
-                return Err(anyhow!("SSE error: {:?}", e));
+                return Err(anyhow!("SSE error: {e:?}"));
             }
         }
     }
@@ -2208,17 +2276,23 @@ async fn send_streaming_request(
     let time_to_first_reasoning_token_ms = first_reasoning_token_time
         .map(|t| t.duration_since(start_time).as_secs_f64() * 1000.0);
 
+    // Thinking time = duration from first reasoning token to first content (non-reasoning) token
     let thinking_time_ms = match (first_reasoning_token_time, first_content_token_time) {
         (Some(reasoning_start), Some(content_start)) => {
             Some(content_start.duration_since(reasoning_start).as_secs_f64() * 1000.0)
         }
+        // If reasoning happened but no content token arrived, use last reasoning chunk as end
         (Some(reasoning_start), None) => last_reasoning_chunk_time
             .map(|end| end.duration_since(reasoning_start).as_secs_f64() * 1000.0),
         _ => None,
     };
 
     // Extract cache metrics from response headers
-    let cache_metrics = extract_cache_metrics_from_headers(&response_headers, input_tokens, output_tokens);
+    let cache_metrics =
+        extract_cache_metrics_from_headers(&response_headers, input_tokens, output_tokens);
+
+    // Create output preview (first 20 tokens)
+    let output_preview = extract_output_preview(&output_text, 20);
 
     Ok(RequestMetrics {
         success: true,
@@ -2234,6 +2308,7 @@ async fn send_streaming_request(
         verification_success,
         verification_time_ms,
         prompt_preview,
+        output_preview,
         cache_metrics,
         quality_metrics: None,
         request_type,
@@ -2265,7 +2340,7 @@ async fn prewarm_connections(client: &Client, base_url: &str, api_key: &str, cou
         handles.push(tokio::spawn(async move {
             let mut req = client.get(&url);
             if !api_key.is_empty() {
-                req = req.header("Authorization", format!("Bearer {}", api_key));
+                req = req.header("Authorization", format!("Bearer {api_key}"));
             }
             let _ = req.send().await;
         }));
@@ -2287,7 +2362,10 @@ pub async fn run_multi_phase_benchmark(
     phases: Vec<PhaseConfig>,
     conversation_manager: Option<&ConversationManager>,
 ) -> Result<Vec<BenchmarkResult>> {
-    info!("Running multi-phase benchmark: {}", config.name.as_deref().unwrap_or("unnamed"));
+    info!(
+        "Running multi-phase benchmark: {}",
+        config.name.as_deref().unwrap_or("unnamed")
+    );
     info!("Phases: {}", phases.len());
 
     let mut all_results = Vec::new();
@@ -2424,14 +2502,13 @@ async fn run_benchmark_internal(
             let err = failed_for_display.load(Ordering::Relaxed);
 
             let rps_str = if rps_limit > 0.0 {
-                format!(" | rps: {}", rps_limit)
+                format!(" | rps: {rps_limit}")
             } else {
                 String::new()
             };
 
             progress_updater.set_message(format!(
-                "| {}/{} active | {} ok, {} err{}",
-                active, max_concurrency, ok, err, rps_str
+                "| {active}/{max_concurrency} active | {ok} ok, {err} err{rps_str}"
             ));
 
             if progress_updater.is_finished() {
@@ -2500,7 +2577,6 @@ async fn run_benchmark_internal(
                 }
             }
         }
-
 
         let prompt_preview = extract_prompt_preview(&messages, 20);
         let config_base_url = config.base_url.clone();
@@ -2595,7 +2671,7 @@ async fn run_benchmark_internal(
                 }
                 Err(e) => {
                     failed.fetch_add(1, Ordering::Relaxed);
-                    progress.println(format!("ERROR: Request failed: {}", e));
+                    progress.println(format!("ERROR: Request failed: {e}"));
                     let _ = tx
                         .send(RequestMetrics {
                             success: false,
@@ -2611,6 +2687,7 @@ async fn run_benchmark_internal(
                             verification_success: false,
                             verification_time_ms: 0.0,
                             prompt_preview,
+                            output_preview: String::new(),
                             cache_metrics: None,
                             quality_metrics: None,
                             request_type: config_request_type,
@@ -2668,6 +2745,7 @@ async fn run_benchmark_internal(
     let mut rouge_l_scores: Vec<f64> = Vec::new();
     let mut quality_metrics_count = 0;
     let mut sample_prompts: Vec<String> = Vec::new();
+    let mut sample_outputs: Vec<String> = Vec::new();
     // Audio/image metrics
     let mut audio_input_requests = 0;
     let mut audio_output_requests = 0;
@@ -2676,6 +2754,7 @@ async fn run_benchmark_internal(
     let mut total_images_generated: u64 = 0;
     let mut total_image_bytes: u64 = 0;
     let mut image_generation_time_values: Vec<f64> = Vec::new();
+    // Reasoning/thinking metrics
     let mut total_reasoning_tokens: u64 = 0;
     let mut requests_with_reasoning: usize = 0;
     let mut thinking_time_values: Vec<f64> = Vec::new();
@@ -2696,6 +2775,14 @@ async fn run_benchmark_internal(
             // Collect sample prompts (first 5 unique ones)
             if sample_prompts.len() < 5 && !sample_prompts.contains(&metrics.prompt_preview) {
                 sample_prompts.push(metrics.prompt_preview.clone());
+            }
+
+            // Collect sample outputs (first 5 unique ones)
+            if sample_outputs.len() < 5
+                && !metrics.output_preview.is_empty()
+                && !sample_outputs.contains(&metrics.output_preview)
+            {
+                sample_outputs.push(metrics.output_preview.clone());
             }
 
             // Track cache metrics if available
@@ -2828,6 +2915,7 @@ async fn run_benchmark_internal(
         f1_scores,
         rouge_l_scores,
         sample_prompts,
+        sample_outputs,
         request_type: config.request_type.clone(),
         audio_input_requests,
         audio_output_requests,
@@ -2846,7 +2934,7 @@ async fn run_benchmark_internal(
 pub fn aggregate_phase_results(phase_results: &[BenchmarkResult]) -> BenchmarkResult {
     if phase_results.is_empty() {
         return BenchmarkResult {
-            name: Some("Aggregated Results".to_string()),
+            name: None,
             successful_requests: 0,
             failed_requests: 0,
             total_requests: 0,
@@ -2876,6 +2964,7 @@ pub fn aggregate_phase_results(phase_results: &[BenchmarkResult]) -> BenchmarkRe
             f1_scores: Vec::new(),
             rouge_l_scores: Vec::new(),
             sample_prompts: Vec::new(),
+            sample_outputs: Vec::new(),
             request_type: RequestType::ChatCompletion,
             audio_input_requests: 0,
             audio_output_requests: 0,
@@ -2890,8 +2979,14 @@ pub fn aggregate_phase_results(phase_results: &[BenchmarkResult]) -> BenchmarkRe
         };
     }
 
+    // Extract provider name from first phase (remove " - Warmup" or " - Query" suffix)
+    let provider_name = phase_results[0]
+        .name
+        .as_ref()
+        .map(|n| n.split(" - ").next().unwrap_or(n).to_string());
+
     let mut aggregated = BenchmarkResult {
-        name: Some("Aggregated Results".to_string()),
+        name: provider_name,
         successful_requests: 0,
         failed_requests: 0,
         total_requests: 0,
@@ -2921,6 +3016,7 @@ pub fn aggregate_phase_results(phase_results: &[BenchmarkResult]) -> BenchmarkRe
         f1_scores: Vec::new(),
         rouge_l_scores: Vec::new(),
         sample_prompts: Vec::new(),
+        sample_outputs: Vec::new(),
         request_type: RequestType::ChatCompletion,
         audio_input_requests: 0,
         audio_output_requests: 0,
@@ -2953,13 +3049,19 @@ pub fn aggregate_phase_results(phase_results: &[BenchmarkResult]) -> BenchmarkRe
         aggregated.ttft_values.extend(result.ttft_values.clone());
         aggregated.tpot_values.extend(result.tpot_values.clone());
         aggregated.itl_values.extend(result.itl_values.clone());
-        aggregated.request_duration_values
+        aggregated
+            .request_duration_values
             .extend(result.request_duration_values.clone());
-        aggregated.tokens_per_request.extend(result.tokens_per_request.clone());
-        aggregated.verification_time_values
+        aggregated
+            .tokens_per_request
+            .extend(result.tokens_per_request.clone());
+        aggregated
+            .verification_time_values
             .extend(result.verification_time_values.clone());
         aggregated.f1_scores.extend(result.f1_scores.clone());
-        aggregated.rouge_l_scores.extend(result.rouge_l_scores.clone());
+        aggregated
+            .rouge_l_scores
+            .extend(result.rouge_l_scores.clone());
         aggregated.quality_metrics_count += result.quality_metrics_count;
         aggregated.total_reasoning_tokens += result.total_reasoning_tokens;
         aggregated.requests_with_reasoning += result.requests_with_reasoning;
@@ -2973,12 +3075,19 @@ pub fn aggregate_phase_results(phase_results: &[BenchmarkResult]) -> BenchmarkRe
                 aggregated.sample_prompts.push(prompt.clone());
             }
         }
+
+        // Collect unique sample outputs
+        for output in &result.sample_outputs {
+            if aggregated.sample_outputs.len() < 5 && !aggregated.sample_outputs.contains(output) {
+                aggregated.sample_outputs.push(output.clone());
+            }
+        }
     }
 
     // Recalculate average cache hit rate
     if aggregated.cache_hits + aggregated.cache_misses > 0 {
-        aggregated.avg_cache_hit_rate = aggregated.cache_hits as f64
-            / (aggregated.cache_hits + aggregated.cache_misses) as f64;
+        aggregated.avg_cache_hit_rate =
+            aggregated.cache_hits as f64 / (aggregated.cache_hits + aggregated.cache_misses) as f64;
     }
 
     // Recalculate average quality scores
@@ -3013,7 +3122,7 @@ pub async fn run_scenario(scenario: &Scenario) -> Result<Vec<BenchmarkResult>> {
         if img_config.save_images {
             let safe_name = scenario.name.replace(' ', "_").to_lowercase();
             let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
-            Some(format!("output/images/{}_{}", safe_name, timestamp))
+            Some(format!("output/images/{safe_name}_{timestamp}"))
         } else {
             None
         }
@@ -3063,14 +3172,17 @@ pub async fn run_scenario(scenario: &Scenario) -> Result<Vec<BenchmarkResult>> {
 }
 
 /// Run a multi-phase scenario with warmup and query phases
-pub async fn run_multi_phase_scenario(scenario: &MultiPhaseScenario) -> Result<Vec<BenchmarkResult>> {
+pub async fn run_multi_phase_scenario(
+    scenario: &MultiPhaseScenario,
+) -> Result<Vec<BenchmarkResult>> {
     info!("Running multi-phase scenario: {}", scenario.name);
     if let Some(desc) = &scenario.description {
         info!("Description: {}", desc);
     }
 
-    // Load dataset once for all providers
-    let prompts = load_dataset(&scenario.dataset, 1000).await?;
+    // Calculate total prompts needed from all phases
+    let total_prompts_needed: usize = scenario.phases.iter().map(|p| p.num_requests).sum();
+    let prompts = load_dataset(&scenario.dataset, total_prompts_needed).await?;
 
     if prompts.is_empty() {
         return Err(anyhow!("No prompts loaded from dataset"));
@@ -3099,7 +3211,7 @@ pub async fn run_multi_phase_scenario(scenario: &MultiPhaseScenario) -> Result<V
             model,
             max_tokens: scenario.max_tokens,
             concurrency: 1, // Will be overridden per-phase
-            rps: 100.0, // Will be overridden per-phase
+            rps: 100.0,     // Will be overridden per-phase
             timeout_secs: scenario.timeout_secs,
             disable_prewarm: false,
             verify: false,
@@ -3112,13 +3224,9 @@ pub async fn run_multi_phase_scenario(scenario: &MultiPhaseScenario) -> Result<V
             image_output_dir: None,
         };
 
-        let phase_results = run_multi_phase_benchmark(
-            &config,
-            prompts.clone(),
-            scenario.phases.clone(),
-            None,
-        )
-        .await?;
+        let phase_results =
+            run_multi_phase_benchmark(&config, prompts.clone(), scenario.phases.clone(), None)
+                .await?;
 
         let aggregated = aggregate_phase_results(&phase_results);
         results.push(aggregated);
@@ -3134,7 +3242,7 @@ pub async fn run_multi_phase_scenario(scenario: &MultiPhaseScenario) -> Result<V
 pub fn print_result(result: &BenchmarkResult) {
     println!();
     if let Some(name) = &result.name {
-        println!("============ {} ============", name);
+        println!("============ {name} ============");
     }
     println!("============ Serving Benchmark Result ============");
     println!(
@@ -3166,7 +3274,15 @@ pub fn print_result(result: &BenchmarkResult) {
         for (i, prompt) in result.sample_prompts.iter().enumerate() {
             println!("  {}. {}", i + 1, prompt);
         }
+    }
+
+    // Show sample outputs
+    if !result.sample_outputs.is_empty() {
         println!();
+        println!("Sample outputs received (first 20 tokens):");
+        for (i, output) in result.sample_outputs.iter().enumerate() {
+            println!("  {}. {}", i + 1, output);
+        }
     }
 
     // Show TEE verification stats if any verification was attempted
@@ -3304,10 +3420,7 @@ pub fn print_result(result: &BenchmarkResult) {
         } else {
             ""
         };
-        println!(
-            "Tokens per chunk:                        {:.2}{}",
-            tpc, tpc_note
-        );
+        println!("Tokens per chunk:                        {tpc:.2}{tpc_note}");
     }
 
     println!(
@@ -3521,9 +3634,9 @@ pub fn print_comparison(results: &[BenchmarkResult]) {
 
     let separator = "=".repeat(100);
 
-    println!("\n{}", separator);
+    println!("\n{separator}");
     println!("Comparison: {}", names.join(" vs "));
-    println!("{}", separator);
+    println!("{separator}");
 
     // Helper to find winner (lowest value for latency metrics, highest for throughput)
     let find_winner = |values: &[f64], lower_is_better: bool| -> Option<usize> {
@@ -3556,7 +3669,7 @@ pub fn print_comparison(results: &[BenchmarkResult]) {
     // Header row
     print!("{:<width$}", "Metric", width = metric_width);
     for name in &names {
-        print!(" | {:<width$}", name, width = col_width);
+        print!(" | {name:<col_width$}");
     }
     println!(" | Winner");
 
@@ -3660,7 +3773,7 @@ pub fn print_comparison(results: &[BenchmarkResult]) {
                 })
                 .collect(),
             |v: f64| if v > 0.0 {
-                format!("{:.0} ms", v)
+                format!("{v:.0} ms")
             } else {
                 "-".to_string()
             },
@@ -3672,7 +3785,7 @@ pub fn print_comparison(results: &[BenchmarkResult]) {
     print_row!(
         "Avg TTFT (ms)",
         results.iter().map(|r| mean(&r.ttft_values)).collect(),
-        |v: f64| format!("{:.0} ms", v),
+        |v: f64| format!("{v:.0} ms"),
         true
     );
 
@@ -3683,7 +3796,7 @@ pub fn print_comparison(results: &[BenchmarkResult]) {
             .iter()
             .map(|r| percentile(&r.ttft_values, 95.0))
             .collect(),
-        |v: f64| format!("{:.0} ms", v),
+        |v: f64| format!("{v:.0} ms"),
         true
     );
 
@@ -3694,7 +3807,7 @@ pub fn print_comparison(results: &[BenchmarkResult]) {
             .iter()
             .map(|r| percentile(&r.ttft_values, 99.0))
             .collect(),
-        |v: f64| format!("{:.0} ms", v),
+        |v: f64| format!("{v:.0} ms"),
         true
     );
 
@@ -3702,7 +3815,7 @@ pub fn print_comparison(results: &[BenchmarkResult]) {
     print_row!(
         "Avg ICL (ms)",
         results.iter().map(|r| mean(&r.itl_values)).collect(),
-        |v: f64| format!("{:.1} ms", v),
+        |v: f64| format!("{v:.1} ms"),
         true
     );
 
@@ -3713,7 +3826,7 @@ pub fn print_comparison(results: &[BenchmarkResult]) {
             .iter()
             .map(|r| percentile(&r.itl_values, 95.0))
             .collect(),
-        |v: f64| format!("{:.1} ms", v),
+        |v: f64| format!("{v:.1} ms"),
         true
     );
 
@@ -3721,7 +3834,7 @@ pub fn print_comparison(results: &[BenchmarkResult]) {
     print_row!(
         "Avg TPOT (ms)",
         results.iter().map(|r| mean(&r.tpot_values)).collect(),
-        |v: f64| format!("{:.1} ms", v),
+        |v: f64| format!("{v:.1} ms"),
         true
     );
 
@@ -3741,7 +3854,7 @@ pub fn print_comparison(results: &[BenchmarkResult]) {
                 })
                 .collect(),
             |v: f64| if v > 0.0 {
-                format!("{:.0} ms", v)
+                format!("{v:.0} ms")
             } else {
                 "-".to_string()
             },
@@ -3775,7 +3888,7 @@ pub fn print_comparison(results: &[BenchmarkResult]) {
     print_row!(
         "Avg Total Duration (ms)",
         results.iter().map(|r| r.avg_request_duration()).collect(),
-        |v: f64| format!("{:.0} ms", v),
+        |v: f64| format!("{v:.0} ms"),
         true
     );
 
@@ -3786,7 +3899,7 @@ pub fn print_comparison(results: &[BenchmarkResult]) {
             .iter()
             .map(|r| percentile(&r.request_duration_values, 95.0))
             .collect(),
-        |v: f64| format!("{:.0} ms", v),
+        |v: f64| format!("{v:.0} ms"),
         true
     );
 
@@ -3795,7 +3908,7 @@ pub fn print_comparison(results: &[BenchmarkResult]) {
 
     print!("{:<width$}", "Metric", width = metric_width);
     for name in &names {
-        print!(" | {:<width$}", name, width = col_width);
+        print!(" | {name:<col_width$}");
     }
     println!(" | Winner");
     println!("{}", "-".repeat(total_width));
@@ -3804,7 +3917,7 @@ pub fn print_comparison(results: &[BenchmarkResult]) {
     print_row!(
         "Requests/sec",
         results.iter().map(|r| r.request_throughput()).collect(),
-        |v: f64| format!("{:.2}", v),
+        |v: f64| format!("{v:.2}"),
         false
     );
 
@@ -3815,7 +3928,7 @@ pub fn print_comparison(results: &[BenchmarkResult]) {
             .iter()
             .map(|r| r.output_token_throughput())
             .collect(),
-        |v: f64| format!("{:.2}", v),
+        |v: f64| format!("{v:.2}"),
         false
     );
 
@@ -3823,11 +3936,11 @@ pub fn print_comparison(results: &[BenchmarkResult]) {
     print_row!(
         "Chunks/sec",
         results.iter().map(|r| r.chunks_per_sec()).collect(),
-        |v: f64| format!("{:.2}", v),
+        |v: f64| format!("{v:.2}"),
         false
     );
 
-    println!("\n{}", separator);
+    println!("\n{separator}");
 }
 
 /// Load a scenario from a YAML file
@@ -3877,7 +3990,9 @@ pub fn expand_scenario_env_vars(mut scenario: Scenario) -> Result<Scenario> {
     Ok(scenario)
 }
 
-pub fn expand_multi_phase_scenario_env_vars(mut scenario: MultiPhaseScenario) -> Result<MultiPhaseScenario> {
+pub fn expand_multi_phase_scenario_env_vars(
+    mut scenario: MultiPhaseScenario,
+) -> Result<MultiPhaseScenario> {
     for provider in &mut scenario.providers {
         provider.api_key = expand_env_vars(&provider.api_key)?;
         provider.base_url = expand_env_vars(&provider.base_url)?;
@@ -3887,18 +4002,18 @@ pub fn expand_multi_phase_scenario_env_vars(mut scenario: MultiPhaseScenario) ->
 
 pub fn load_scenario_from_file(path: &str) -> Result<Scenario> {
     let content = std::fs::read_to_string(path)
-        .with_context(|| format!("Failed to read scenario file: {}", path))?;
+        .with_context(|| format!("Failed to read scenario file: {path}"))?;
     let scenario: Scenario = serde_yaml::from_str(&content)
-        .with_context(|| format!("Failed to parse scenario file: {}", path))?;
+        .with_context(|| format!("Failed to parse scenario file: {path}"))?;
     expand_scenario_env_vars(scenario)
 }
 
 /// Load a multi-phase scenario from a YAML file
 pub fn load_multi_phase_scenario_from_file(path: &str) -> Result<MultiPhaseScenario> {
     let content = std::fs::read_to_string(path)
-        .with_context(|| format!("Failed to read scenario file: {}", path))?;
+        .with_context(|| format!("Failed to read scenario file: {path}"))?;
     let scenario: MultiPhaseScenario = serde_yaml::from_str(&content)
-        .with_context(|| format!("Failed to parse multi-phase scenario file: {}", path))?;
+        .with_context(|| format!("Failed to parse multi-phase scenario file: {path}"))?;
     expand_multi_phase_scenario_env_vars(scenario)
 }
 
@@ -3906,7 +4021,7 @@ pub fn load_multi_phase_scenario_from_file(path: &str) -> Result<MultiPhaseScena
 pub fn generate_output_filename(scenario_name: &str, output_dir: &str) -> String {
     let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
     let safe_name = scenario_name.replace([' ', '/'], "_").to_lowercase();
-    format!("{}/{}_{}.txt", output_dir, safe_name, timestamp)
+    format!("{output_dir}/{safe_name}_{timestamp}.txt")
 }
 
 /// Save benchmark results to a file
@@ -3925,7 +4040,7 @@ pub fn save_results_to_file(
     let mut file = std::fs::File::create(output_path)?;
 
     // Write header
-    writeln!(file, "# Benchmark Results: {}", scenario_name)?;
+    writeln!(file, "# Benchmark Results: {scenario_name}")?;
     writeln!(
         file,
         "# Generated: {}",
@@ -3951,7 +4066,7 @@ pub fn save_results_to_file(
 
 fn write_result_to_file<W: std::io::Write>(file: &mut W, result: &BenchmarkResult) -> Result<()> {
     if let Some(name) = &result.name {
-        writeln!(file, "============ {} ============", name)?;
+        writeln!(file, "============ {name} ============")?;
     }
     writeln!(file, "============ Serving Benchmark Result ============")?;
     writeln!(
@@ -3977,7 +4092,15 @@ fn write_result_to_file<W: std::io::Write>(file: &mut W, result: &BenchmarkResul
         for (i, prompt) in result.sample_prompts.iter().enumerate() {
             writeln!(file, "  {}. {}", i + 1, prompt)?;
         }
+    }
+
+    // Write sample outputs
+    if !result.sample_outputs.is_empty() {
         writeln!(file)?;
+        writeln!(file, "Sample outputs received (first 20 tokens):")?;
+        for (i, output) in result.sample_outputs.iter().enumerate() {
+            writeln!(file, "  {}. {}", i + 1, output)?;
+        }
     }
 
     // Write TEE verification stats if any verification was attempted
@@ -4134,8 +4257,7 @@ fn write_result_to_file<W: std::io::Write>(file: &mut W, result: &BenchmarkResul
         };
         writeln!(
             file,
-            "Tokens per chunk:                        {:.2}{}",
-            tpc, tpc_note
+            "Tokens per chunk:                        {tpc:.2}{tpc_note}"
         )?;
     }
 
@@ -4388,9 +4510,9 @@ fn write_comparison_to_file<W: std::io::Write>(
     let col_width = 12;
     let metric_width = 28;
 
-    writeln!(file, "{}", separator)?;
+    writeln!(file, "{separator}")?;
     writeln!(file, "Comparison: {}", names.join(" vs "))?;
-    writeln!(file, "{}", separator)?;
+    writeln!(file, "{separator}")?;
 
     let find_winner = |values: &[f64], lower_is_better: bool| -> Option<usize> {
         if values.iter().all(|&v| v == 0.0) {
@@ -4417,7 +4539,7 @@ fn write_comparison_to_file<W: std::io::Write>(
     // Header
     write!(file, "{:<width$}", "Metric", width = metric_width)?;
     for name in &names {
-        write!(file, " | {:<width$}", name, width = col_width)?;
+        write!(file, " | {name:<col_width$}")?;
     }
     writeln!(file, " | Winner")?;
 
@@ -4472,7 +4594,7 @@ fn write_comparison_to_file<W: std::io::Write>(
                 })
                 .collect(),
             |v: f64| if v > 0.0 {
-                format!("{:.0} ms", v)
+                format!("{v:.0} ms")
             } else {
                 "-".to_string()
             },
@@ -4484,7 +4606,7 @@ fn write_comparison_to_file<W: std::io::Write>(
     write_row!(
         "Avg TTFT (ms)",
         results.iter().map(|r| mean(&r.ttft_values)).collect(),
-        |v: f64| format!("{:.0} ms", v),
+        |v: f64| format!("{v:.0} ms"),
         true
     );
     write_row!(
@@ -4493,16 +4615,17 @@ fn write_comparison_to_file<W: std::io::Write>(
             .iter()
             .map(|r| percentile(&r.ttft_values, 95.0))
             .collect(),
-        |v: f64| format!("{:.0} ms", v),
+        |v: f64| format!("{v:.0} ms"),
         true
     );
     write_row!(
         "Avg TPOT (ms)",
         results.iter().map(|r| mean(&r.tpot_values)).collect(),
-        |v: f64| format!("{:.1} ms", v),
+        |v: f64| format!("{v:.1} ms"),
         true
     );
 
+    // Thinking time comparison (only if any result has reasoning tokens)
     let any_reasoning = results.iter().any(|r| r.total_reasoning_tokens > 0);
     if any_reasoning {
         write_row!(
@@ -4518,7 +4641,7 @@ fn write_comparison_to_file<W: std::io::Write>(
                 })
                 .collect(),
             |v: f64| if v > 0.0 {
-                format!("{:.0} ms", v)
+                format!("{v:.0} ms")
             } else {
                 "-".to_string()
             },
@@ -4529,7 +4652,7 @@ fn write_comparison_to_file<W: std::io::Write>(
     write_row!(
         "Avg Total Duration (ms)",
         results.iter().map(|r| r.avg_request_duration()).collect(),
-        |v: f64| format!("{:.0} ms", v),
+        |v: f64| format!("{v:.0} ms"),
         true
     );
     write_row!(
@@ -4538,14 +4661,14 @@ fn write_comparison_to_file<W: std::io::Write>(
             .iter()
             .map(|r| percentile(&r.request_duration_values, 95.0))
             .collect(),
-        |v: f64| format!("{:.0} ms", v),
+        |v: f64| format!("{v:.0} ms"),
         true
     );
 
     writeln!(file, "\n## Throughput\n")?;
     write!(file, "{:<width$}", "Metric", width = metric_width)?;
     for name in &names {
-        write!(file, " | {:<width$}", name, width = col_width)?;
+        write!(file, " | {name:<col_width$}")?;
     }
     writeln!(file, " | Winner")?;
     writeln!(file, "{}", "-".repeat(total_width))?;
@@ -4553,7 +4676,7 @@ fn write_comparison_to_file<W: std::io::Write>(
     write_row!(
         "Requests/sec",
         results.iter().map(|r| r.request_throughput()).collect(),
-        |v: f64| format!("{:.2}", v),
+        |v: f64| format!("{v:.2}"),
         false
     );
     write_row!(
@@ -4562,10 +4685,10 @@ fn write_comparison_to_file<W: std::io::Write>(
             .iter()
             .map(|r| r.output_token_throughput())
             .collect(),
-        |v: f64| format!("{:.2}", v),
+        |v: f64| format!("{v:.2}"),
         false
     );
 
-    writeln!(file, "\n{}", separator)?;
+    writeln!(file, "\n{separator}")?;
     Ok(())
 }

@@ -179,16 +179,13 @@ mod tests {
     async fn test_append_message() {
         let manager = ConversationManager::new();
 
-        let msg = Message {
-            role: "user".to_string(),
-            content: "Hello".to_string(),
-        };
+        let msg = Message::text("user", "Hello");
 
         manager.append_message("user1", msg.clone()).await;
 
         let history = manager.get_history("user1").await;
         assert_eq!(history.len(), 1);
-        assert_eq!(history[0].content, "Hello");
+        assert_eq!(history[0].content.as_text(), Some("Hello"));
     }
 
     #[tokio::test]
@@ -196,23 +193,11 @@ mod tests {
         let manager = ConversationManager::new();
 
         manager
-            .append_message(
-                "user1",
-                Message {
-                    role: "user".to_string(),
-                    content: "Hi".to_string(),
-                },
-            )
+            .append_message("user1", Message::text("user", "Hi"))
             .await;
 
         manager
-            .append_message(
-                "user1",
-                Message {
-                    role: "assistant".to_string(),
-                    content: "Hello!".to_string(),
-                },
-            )
+            .append_message("user1", Message::text("assistant", "Hello!"))
             .await;
 
         let history = manager.get_history("user1").await;
@@ -226,23 +211,11 @@ mod tests {
         let manager = ConversationManager::new();
 
         manager
-            .append_message(
-                "user1",
-                Message {
-                    role: "user".to_string(),
-                    content: "User1 message".to_string(),
-                },
-            )
+            .append_message("user1", Message::text("user", "User1 message"))
             .await;
 
         manager
-            .append_message(
-                "user2",
-                Message {
-                    role: "user".to_string(),
-                    content: "User2 message".to_string(),
-                },
-            )
+            .append_message("user2", Message::text("user", "User2 message"))
             .await;
 
         let user1_history = manager.get_history("user1").await;
@@ -250,8 +223,8 @@ mod tests {
 
         assert_eq!(user1_history.len(), 1);
         assert_eq!(user2_history.len(), 1);
-        assert_eq!(user1_history[0].content, "User1 message");
-        assert_eq!(user2_history[0].content, "User2 message");
+        assert_eq!(user1_history[0].content.as_text(), Some("User1 message"));
+        assert_eq!(user2_history[0].content.as_text(), Some("User2 message"));
     }
 
     #[tokio::test]
@@ -272,13 +245,7 @@ mod tests {
         let manager = ConversationManager::new();
 
         manager
-            .append_message(
-                "user1",
-                Message {
-                    role: "user".to_string(),
-                    content: "Test".to_string(),
-                },
-            )
+            .append_message("user1", Message::text("user", "Test"))
             .await;
 
         manager.next_round("user1").await;
@@ -300,16 +267,13 @@ mod tests {
         for user_id in 0..10 {
             let manager_clone = manager.clone();
             let task = tokio::spawn(async move {
-                let user_id_str = format!("user{}", user_id);
+                let user_id_str = format!("user{user_id}");
 
                 for round in 0..5 {
                     manager_clone
                         .append_message(
                             &user_id_str,
-                            Message {
-                                role: "user".to_string(),
-                                content: format!("Message {}", round),
-                            },
+                            Message::text("user", &format!("Message {round}")),
                         )
                         .await;
 
@@ -328,7 +292,7 @@ mod tests {
         assert_eq!(manager.active_conversation_count().await, 10);
 
         for user_id in 0..10 {
-            let user_id_str = format!("user{}", user_id);
+            let user_id_str = format!("user{user_id}");
             let history = manager.get_history(&user_id_str).await;
             let round = manager.get_round(&user_id_str).await;
 
@@ -342,23 +306,11 @@ mod tests {
         let manager = ConversationManager::new();
 
         manager
-            .append_message(
-                "user1",
-                Message {
-                    role: "user".to_string(),
-                    content: "Test".to_string(),
-                },
-            )
+            .append_message("user1", Message::text("user", "Test"))
             .await;
 
         manager
-            .append_message(
-                "user2",
-                Message {
-                    role: "user".to_string(),
-                    content: "Test".to_string(),
-                },
-            )
+            .append_message("user2", Message::text("user", "Test"))
             .await;
 
         assert_eq!(manager.active_conversation_count().await, 2);

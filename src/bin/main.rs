@@ -1,10 +1,11 @@
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use genai_benchmark::{
-    expand_scenario_env_vars, expand_multi_phase_scenario_env_vars, generate_output_filename, load_dataset, load_scenario_from_file,
-    load_multi_phase_scenario_from_file, print_comparison, print_result, run_benchmark,
-    run_scenario, run_multi_phase_scenario, save_results_to_file,
-    AudioInputConfig, BenchmarkConfig, DatasetConfig, ImageGenerationConfig, RequestType, Scenario, MultiPhaseScenario,
+    expand_multi_phase_scenario_env_vars, expand_scenario_env_vars, generate_output_filename,
+    load_dataset, load_multi_phase_scenario_from_file, load_scenario_from_file, print_comparison,
+    print_result, run_benchmark, run_multi_phase_scenario, run_scenario, save_results_to_file,
+    AudioInputConfig, BenchmarkConfig, DatasetConfig, ImageGenerationConfig, MultiPhaseScenario,
+    RequestType, Scenario,
 };
 use tracing::info;
 
@@ -22,8 +23,7 @@ const SCENARIO_IMAGE_GENERATION_512: &str =
     include_str!("../../scenarios/image-generation-512.yaml");
 const SCENARIO_IMAGE_GENERATION_BATCH: &str =
     include_str!("../../scenarios/image-generation-batch.yaml");
-const SCENARIO_AUDIO_OUTPUT_STRESS: &str =
-    include_str!("../../scenarios/audio-output-stress.yaml");
+const SCENARIO_AUDIO_OUTPUT_STRESS: &str = include_str!("../../scenarios/audio-output-stress.yaml");
 const SCENARIO_MULTIMODAL: &str = include_str!("../../scenarios/multimodal.yaml");
 
 // Embedded multi-phase scenario files
@@ -279,6 +279,9 @@ impl DatasetSourceArg {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Load .env file if present (silently ignore if not found)
+    dotenvy::dotenv().ok();
+
     let args = Args::parse();
 
     // Initialize logging
@@ -317,6 +320,21 @@ async fn main() -> Result<()> {
 
 async fn run_scenario_file(file: &str, output_dir: &str, no_save: bool) -> Result<()> {
     info!("Loading scenario from: {}", file);
+
+    // Read file and check if it has a "phases" key to auto-detect multi-phase scenarios
+    let content = std::fs::read_to_string(file)?;
+    let yaml_value: serde_yaml::Value = serde_yaml::from_str(&content)?;
+
+    let has_phases = yaml_value
+        .as_mapping()
+        .map(|m| m.contains_key(serde_yaml::Value::String("phases".to_string())))
+        .unwrap_or(false);
+
+    if has_phases {
+        info!("Detected multi-phase scenario (has 'phases' key)");
+        return run_multi_phase_scenario_file(file, output_dir, no_save).await;
+    }
+
     let scenario = load_scenario_from_file(file)?;
 
     let results = run_scenario(&scenario).await?;
@@ -389,10 +407,7 @@ async fn run_embedded_scenario(name: &str, output_dir: &str, no_save: bool) -> R
 
     // Fall back to legacy scenario
     let yaml_content = get_embedded_scenario(name).ok_or_else(|| {
-        anyhow!(
-            "Unknown scenario: '{}'. Use 'list' to see available scenarios.",
-            name
-        )
+        anyhow!("Unknown scenario: '{name}'. Use 'list' to see available scenarios.")
     })?;
 
     info!("Running embedded legacy scenario: {}", name);
@@ -421,19 +436,16 @@ async fn run_embedded_scenario(name: &str, output_dir: &str, no_save: bool) -> R
 fn export_scenario(name: &str) -> Result<()> {
     // Try multi-phase scenario first
     if let Some(yaml_content) = get_embedded_multi_phase_scenario(name) {
-        println!("{}", yaml_content);
+        println!("{yaml_content}");
         return Ok(());
     }
 
     // Fall back to legacy scenario
     let yaml_content = get_embedded_scenario(name).ok_or_else(|| {
-        anyhow!(
-            "Unknown scenario: '{}'. Use 'list' to see available scenarios.",
-            name
-        )
+        anyhow!("Unknown scenario: '{name}'. Use 'list' to see available scenarios.")
     })?;
 
-    println!("{}", yaml_content);
+    println!("{yaml_content}");
     Ok(())
 }
 
@@ -442,10 +454,10 @@ fn describe_scenario(name: &str) -> Result<()> {
     if let Some(yaml_content) = get_embedded_multi_phase_scenario(name) {
         let scenario: MultiPhaseScenario = serde_yaml::from_str(yaml_content)?;
 
-        println!("Scenario: {} (Multi-Phase)", name);
+        println!("Scenario: {name} (Multi-Phase)");
         println!("Name: {}", scenario.name);
         if let Some(desc) = &scenario.description {
-            println!("Description: {}", desc);
+            println!("Description: {desc}");
         }
         println!();
 
@@ -460,10 +472,10 @@ fn describe_scenario(name: &str) -> Result<()> {
             println!("  Phase {}: {:?}", i + 1, phase.phase);
             println!("    Requests: {}", phase.num_requests);
             if let Some(c) = phase.concurrency {
-                println!("    Concurrency: {}", c);
+                println!("    Concurrency: {c}");
             }
             if let Some(r) = phase.rps {
-                println!("    RPS: {}", r);
+                println!("    RPS: {r}");
             }
         }
         println!();
@@ -480,25 +492,22 @@ fn describe_scenario(name: &str) -> Result<()> {
         println!();
 
         println!("Usage:");
-        println!("  genai-benchmark run {}  # Run this scenario", name);
+        println!("  genai-benchmark run {name}  # Run this scenario");
 
         return Ok(());
     }
 
     // Fall back to legacy scenario
     let yaml_content = get_embedded_scenario(name).ok_or_else(|| {
-        anyhow!(
-            "Unknown scenario: '{}'. Use 'list' to see available scenarios.",
-            name
-        )
+        anyhow!("Unknown scenario: '{name}'. Use 'list' to see available scenarios.")
     })?;
 
     let scenario: Scenario = serde_yaml::from_str(yaml_content)?;
 
-    println!("Scenario: {} (Legacy)", name);
+    println!("Scenario: {name} (Legacy)");
     println!("Name: {}", scenario.name);
     if let Some(desc) = &scenario.description {
-        println!("Description: {}", desc);
+        println!("Description: {desc}");
     }
     println!();
 
@@ -527,13 +536,13 @@ fn describe_scenario(name: &str) -> Result<()> {
     if !env_vars.is_empty() {
         println!("Required environment variables:");
         for var in env_vars {
-            println!("  - {}", var);
+            println!("  - {var}");
         }
         println!();
     }
 
     println!("Usage:");
-    println!("  genai-benchmark run {}  # Run this scenario", name);
+    println!("  genai-benchmark run {name}  # Run this scenario");
 
     Ok(())
 }
@@ -558,13 +567,13 @@ fn extract_env_vars(yaml_content: &str) -> Vec<String> {
 fn list_scenarios() -> Result<()> {
     println!("Available embedded LEGACY scenarios:");
     for scenario in list_embedded_scenarios() {
-        println!("  - {}", scenario);
+        println!("  - {scenario}");
     }
     println!();
 
     println!("Available embedded MULTI-PHASE scenarios:");
     for scenario in list_embedded_multi_phase_scenarios() {
-        println!("  - {}", scenario);
+        println!("  - {scenario}");
     }
     println!();
 
@@ -573,7 +582,9 @@ fn list_scenarios() -> Result<()> {
     println!("  genai-benchmark run <scenario-name>       # Run an embedded scenario");
     println!("  genai-benchmark export <scenario-name>    # Export scenario to file");
     println!("  genai-benchmark scenario <path>           # Run a custom YAML scenario file");
-    println!("  genai-benchmark multi-phase-scenario <path>  # Run a custom multi-phase scenario file");
+    println!(
+        "  genai-benchmark multi-phase-scenario <path>  # Run a custom multi-phase scenario file"
+    );
     Ok(())
 }
 

@@ -13,7 +13,10 @@ async fn test_multi_round_qa_loader() {
 
     let prompts = result.unwrap();
     assert!(!prompts.is_empty(), "No prompts loaded");
-    assert!(prompts[0].iter().any(|m| m.role == "user"), "No user message found");
+    assert!(
+        prompts[0].iter().any(|m| m.role == "user"),
+        "No user message found"
+    );
 }
 
 #[tokio::test]

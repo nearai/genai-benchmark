@@ -132,7 +132,7 @@ impl PromptBuilder for RagPromptBuilder {
                     if context.documents.len() > 1 {
                         format!("Document {}:\n{}", i + 1, doc)
                     } else {
-                        format!("Document:\n{}", doc)
+                        format!("Document:\n{doc}")
                     }
                 })
                 .collect::<Vec<_>>()
@@ -205,10 +205,7 @@ impl PromptBuilder for LongDocPromptBuilder {
             let combined = context.documents.join("\n\n");
             let word_count = combined.split_whitespace().count();
             if word_count > 5000 {
-                format!(
-                    "[Document: ~{} words]\n\n{}",
-                    word_count, combined
-                )
+                format!("[Document: ~{word_count} words]\n\n{combined}")
             } else {
                 combined
             }
@@ -344,7 +341,9 @@ impl MultiRoundPromptBuilder {
     /// Create a new multi-round QA builder
     pub fn new() -> Self {
         MultiRoundPromptBuilder {
-            system_prompt: "You are a helpful assistant. Answer questions accurately and concisely.".to_string(),
+            system_prompt:
+                "You are a helpful assistant. Answer questions accurately and concisely."
+                    .to_string(),
             conversation_manager: None,
             include_history: true,
         }
@@ -447,11 +446,7 @@ impl DocumentStore {
     }
 
     /// Get random document IDs
-    pub fn get_random_documents(
-        &self,
-        count: usize,
-        seed: Option<u64>,
-    ) -> Vec<String> {
+    pub fn get_random_documents(&self, count: usize, seed: Option<u64>) -> Vec<String> {
         let mut rng = match seed {
             Some(s) => rand::rngs::StdRng::seed_from_u64(s),
             None => rand::rngs::StdRng::from_entropy(),
@@ -517,8 +512,8 @@ mod tests {
     async fn test_long_doc_prompt_builder() {
         let builder = LongDocPromptBuilder::new();
         let long_doc = "word ".repeat(2000); // ~10K words
-        let context = PromptContext::new("What's the main point?".to_string())
-            .with_document(long_doc);
+        let context =
+            PromptContext::new("What's the main point?".to_string()).with_document(long_doc);
 
         let prompt = builder.build_prompt(&context).await.unwrap();
 
@@ -532,8 +527,11 @@ mod tests {
     #[tokio::test]
     async fn test_multi_doc_prompt_builder() {
         let builder = MultiDocPromptBuilder::new().with_max_docs(2);
-        let context = PromptContext::new("Answer this".to_string())
-            .with_documents(vec!["Doc A".to_string(), "Doc B".to_string(), "Doc C".to_string()]);
+        let context = PromptContext::new("Answer this".to_string()).with_documents(vec![
+            "Doc A".to_string(),
+            "Doc B".to_string(),
+            "Doc C".to_string(),
+        ]);
 
         let prompt = builder.build_prompt(&context).await.unwrap();
 
@@ -547,15 +545,15 @@ mod tests {
     #[tokio::test]
     async fn test_multi_round_prompt_builder() {
         let builder = MultiRoundPromptBuilder::new();
-        let context = PromptContext::new("What's your name?".to_string())
-            .with_user("user1".to_string());
+        let context =
+            PromptContext::new("What's your name?".to_string()).with_user("user1".to_string());
 
         let prompt = builder.build_prompt(&context).await.unwrap();
 
         assert_eq!(prompt.len(), 2);
         assert_eq!(prompt[0].role, "system");
         assert_eq!(prompt[1].role, "user");
-        assert_eq!(prompt[1].content, "What's your name?");
+        assert_eq!(prompt[1].content.as_text(), Some("What's your name?"));
     }
 
     #[tokio::test]
@@ -590,7 +588,7 @@ mod tests {
     async fn test_document_store_random() {
         let mut store = DocumentStore::new();
         for i in 1..=10 {
-            store.add_document(format!("doc{}", i), format!("Content {}", i));
+            store.add_document(format!("doc{i}"), format!("Content {i}"));
         }
 
         let random_ids = store.get_random_documents(5, Some(42));
