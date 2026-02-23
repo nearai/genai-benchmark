@@ -31,6 +31,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tiktoken_rs::cl100k_base;
 use tokio::sync::Semaphore;
 use tokio::time::sleep;
 use tracing::{debug, info, warn};
@@ -310,6 +311,16 @@ pub enum DatasetConfig {
         #[serde(default)]
         sample_strategy: SampleStrategy,
     },
+    /// Random tokens benchmark - generates prompts with random token sequences
+    #[serde(rename = "randomtokens")]
+    RandomTokens {
+        /// Number of tokens per prompt
+        #[serde(default = "default_random_token_count")]
+        token_count: usize,
+        /// Random seed for reproducibility
+        #[serde(default)]
+        seed: Option<u64>,
+    },
 }
 
 fn default_hf_dataset() -> String {
@@ -330,6 +341,54 @@ fn default_warmup_rounds() -> usize {
 
 fn default_docs_per_request() -> usize {
     3
+}
+
+fn default_random_token_count() -> usize {
+    1000
+}
+
+/// Count the number of tokens in a text string using cl100k_base encoding
+fn count_tokens(text: &str) -> usize {
+    let bpe = cl100k_base().unwrap();
+    bpe.encode_with_special_tokens(text).len()
+}
+
+/// Adjust document length to target token count
+/// - If document is longer than target, truncate to target tokens
+/// - If document is shorter than target, repeat document until reaching target
+fn adjust_document_length(doc: &str, target_tokens: usize) -> String {
+    let current_tokens = count_tokens(doc);
+
+    if current_tokens == target_tokens {
+        return doc.to_string();
+    }
+
+    let bpe = cl100k_base().unwrap();
+
+    if current_tokens > target_tokens {
+        // Truncate: decode back from tokens
+        let tokens = bpe.encode_with_special_tokens(doc);
+        let truncated = &tokens[..target_tokens.min(tokens.len())];
+        bpe.decode(truncated.to_vec())
+            .unwrap_or_else(|_| doc.chars().take(target_tokens * 4).collect())
+    } else {
+        // Extend: repeat document until we reach target
+        let mut result = doc.to_string();
+        let separator = "\n\n---\n\n";
+        while count_tokens(&result) < target_tokens {
+            result.push_str(separator);
+            result.push_str(doc);
+        }
+        // Trim to exact length if we overshot
+        let result_tokens = bpe.encode_with_special_tokens(&result);
+        if result_tokens.len() > target_tokens {
+            let truncated = &result_tokens[..target_tokens];
+            bpe.decode(truncated.to_vec())
+                .unwrap_or_else(|_| result.chars().take(target_tokens * 4).collect())
+        } else {
+            result
+        }
+    }
 }
 
 /// Sampling strategy for multi-doc QA
@@ -527,6 +586,16 @@ pub enum MessageContent {
     Text(String),
     /// Multimodal content parts
     Parts(Vec<ContentPart>),
+}
+
+impl MessageContent {
+    /// Get the content as a text string, if it's the Text variant
+    pub fn as_text(&self) -> Option<&str> {
+        match self {
+            MessageContent::Text(s) => Some(s),
+            MessageContent::Parts(_) => None,
+        }
+    }
 }
 
 /// Chat message
@@ -1268,6 +1337,67 @@ pub fn generate_synthetic_prompts(count: usize, seed: Option<u64>) -> Vec<Vec<Me
         .collect()
 }
 
+/// Generate prompts with random token sequences of a specific length
+pub fn generate_random_token_prompts(
+    count: usize,
+    token_count: usize,
+    seed: Option<u64>,
+) -> Vec<Vec<Message>> {
+    use rand::{Rng, SeedableRng};
+
+    let bpe = cl100k_base().unwrap();
+    // cl100k_base has ~100k tokens, use a safe range avoiding special tokens
+    const VOCAB_SIZE: usize = 100256;
+
+    let mut rng = match seed {
+        Some(s) => rand::rngs::StdRng::seed_from_u64(s),
+        None => rand::rngs::StdRng::from_entropy(),
+    };
+
+    info!(
+        "Generating {} prompts with {} random tokens each",
+        count, token_count
+    );
+
+    (0..count)
+        .map(|_| {
+            // Generate random token IDs
+            // Use a range that avoids special tokens (typically at the start of vocab)
+            // and very high token IDs that might be reserved
+            let safe_start = 1000; // Skip special tokens and common control chars
+            let safe_end = VOCAB_SIZE.saturating_sub(1000);
+
+            let tokens: Vec<usize> = (0..token_count)
+                .map(|_| rng.gen_range(safe_start..safe_end))
+                .collect();
+
+            // Decode tokens to text (use lossy conversion for invalid UTF-8)
+            let text = bpe.decode(tokens.clone()).unwrap_or_else(|_| {
+                // Fallback: decode tokens one by one, skipping invalid ones
+                tokens
+                    .iter()
+                    .filter_map(|&t| bpe.decode(vec![t]).ok())
+                    .collect::<Vec<_>>()
+                    .join("")
+            });
+
+            vec![
+                Message {
+                    role: "system".to_string(),
+                    content: MessageContent::Text(
+                        "You are a helpful assistant. Please respond to the following text."
+                            .to_string(),
+                    ),
+                },
+                Message {
+                    role: "user".to_string(),
+                    content: MessageContent::Text(text),
+                },
+            ]
+        })
+        .collect()
+}
+
 pub async fn download_hf_dataset(dataset_name: &str, _split: &str) -> Result<String> {
     let url = if dataset_name.contains("ShareGPT") {
         "https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json"
@@ -1356,12 +1486,9 @@ pub async fn load_dataset(
         DatasetConfig::LongDocQa {
             documents_path,
             questions_path: _,
-            doc_token_length: _,
+            doc_token_length,
             warmup_rounds: _,
-        } => {
-            // Phase 2: Implementation stub
-            load_long_doc_qa_dataset(documents_path, num_requests).await
-        }
+        } => load_long_doc_qa_dataset(documents_path, num_requests, *doc_token_length).await,
         DatasetConfig::MultiDocQa {
             documents_path: _,
             questions_path,
@@ -1376,6 +1503,11 @@ pub async fn load_dataset(
                 .unwrap_or("./datasets/multi_doc_qa.jsonl");
             load_multi_doc_qa_dataset(qpath, num_requests).await
         }
+        DatasetConfig::RandomTokens { token_count, seed } => Ok(generate_random_token_prompts(
+            num_requests,
+            *token_count,
+            *seed,
+        )),
     }
 }
 
@@ -1468,8 +1600,15 @@ async fn load_rag_dataset(path: &str, num_requests: usize) -> Result<Vec<Vec<Mes
 }
 
 /// Load long document QA dataset
-async fn load_long_doc_qa_dataset(path: &str, num_requests: usize) -> Result<Vec<Vec<Message>>> {
-    info!("Loading long document QA dataset from: {}", path);
+async fn load_long_doc_qa_dataset(
+    path: &str,
+    num_requests: usize,
+    target_token_length: usize,
+) -> Result<Vec<Vec<Message>>> {
+    info!(
+        "Loading long document QA dataset from: {} (target {} tokens)",
+        path, target_token_length
+    );
 
     let content = tokio::fs::read_to_string(path).await?;
 
@@ -1487,6 +1626,15 @@ async fn load_long_doc_qa_dataset(path: &str, num_requests: usize) -> Result<Vec
     // For long doc QA, create a prompt for each question in each document
     let mut prompts = Vec::new();
     for entry in entries.iter().take(num_requests) {
+        // Adjust document to target token length
+        let original_tokens = count_tokens(&entry.document);
+        let adjusted_doc = adjust_document_length(&entry.document, target_token_length);
+        let adjusted_tokens = count_tokens(&adjusted_doc);
+        info!(
+            "Adjusted document from {} to {} tokens (target: {})",
+            original_tokens, adjusted_tokens, target_token_length
+        );
+
         for question in &entry.questions {
             if prompts.len() >= num_requests * 2 {
                 break;
@@ -1494,20 +1642,24 @@ async fn load_long_doc_qa_dataset(path: &str, num_requests: usize) -> Result<Vec
             prompts.push(vec![
                 Message {
                     role: "system".to_string(),
-                    content: MessageContent::Text("Answer the following question based on the document.".to_string()),
+                    content: MessageContent::Text(
+                        "Answer the following question based on the document.".to_string(),
+                    ),
                 },
                 Message {
                     role: "user".to_string(),
                     content: MessageContent::Text(format!(
-                        "Document:\n{}\n\nQuestion: {}",
-                        entry.document, question
+                        "Document:\n{adjusted_doc}\n\nQuestion: {question}"
                     )),
                 },
             ]);
         }
     }
 
-    info!("Loaded {} prompts from long document QA dataset", prompts.len());
+    info!(
+        "Loaded {} prompts from long document QA dataset",
+        prompts.len()
+    );
     Ok(prompts)
 }
 

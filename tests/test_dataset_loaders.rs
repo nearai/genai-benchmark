@@ -64,3 +64,95 @@ async fn test_multi_doc_qa_loader() {
     let prompts = result.unwrap();
     assert!(!prompts.is_empty(), "No prompts loaded");
 }
+
+#[tokio::test]
+async fn test_random_tokens_loader() {
+    let config = DatasetConfig::RandomTokens {
+        token_count: 100,
+        seed: Some(42),
+    };
+
+    let result = load_dataset(&config, 5).await;
+    assert!(
+        result.is_ok(),
+        "RandomTokens loader failed: {:?}",
+        result.err()
+    );
+
+    let prompts = result.unwrap();
+    assert_eq!(prompts.len(), 5, "Should load exactly 5 prompts");
+
+    for prompt in &prompts {
+        assert_eq!(
+            prompt.len(),
+            2,
+            "Each prompt should have system and user messages"
+        );
+        assert_eq!(prompt[0].role, "system", "First message should be system");
+        assert_eq!(prompt[1].role, "user", "Second message should be user");
+        assert!(
+            prompt[1]
+                .content
+                .as_text()
+                .map(|t| !t.is_empty())
+                .unwrap_or(false),
+            "User message should have non-empty content"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_random_tokens_reproducibility() {
+    let config1 = DatasetConfig::RandomTokens {
+        token_count: 50,
+        seed: Some(12345),
+    };
+    let config2 = DatasetConfig::RandomTokens {
+        token_count: 50,
+        seed: Some(12345),
+    };
+
+    let prompts1 = load_dataset(&config1, 3).await.expect("First load failed");
+    let prompts2 = load_dataset(&config2, 3).await.expect("Second load failed");
+
+    assert_eq!(
+        prompts1.len(),
+        prompts2.len(),
+        "Should have same number of prompts"
+    );
+
+    for (p1, p2) in prompts1.iter().zip(prompts2.iter()) {
+        let content1 = p1[1].content.as_text().expect("Should be text");
+        let content2 = p2[1].content.as_text().expect("Should be text");
+        assert_eq!(content1, content2, "Same seed should produce same content");
+    }
+}
+
+#[tokio::test]
+async fn test_random_tokens_different_seeds() {
+    let config1 = DatasetConfig::RandomTokens {
+        token_count: 50,
+        seed: Some(111),
+    };
+    let config2 = DatasetConfig::RandomTokens {
+        token_count: 50,
+        seed: Some(222),
+    };
+
+    let prompts1 = load_dataset(&config1, 3).await.expect("First load failed");
+    let prompts2 = load_dataset(&config2, 3).await.expect("Second load failed");
+
+    let mut all_same = true;
+    for (p1, p2) in prompts1.iter().zip(prompts2.iter()) {
+        let content1 = p1[1].content.as_text().expect("Should be text");
+        let content2 = p2[1].content.as_text().expect("Should be text");
+        if content1 != content2 {
+            all_same = false;
+            break;
+        }
+    }
+    assert!(
+        !all_same,
+        "Different seeds should produce different content"
+    );
+}
