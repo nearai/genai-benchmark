@@ -38,9 +38,7 @@ pub fn calculate_f1_score(generated: &str, reference: &str) -> f64 {
     let generated_set: HashSet<_> = generated_tokens.iter().collect();
     let reference_set: HashSet<_> = reference_tokens.iter().collect();
 
-    let overlap = generated_set
-        .intersection(&reference_set)
-        .count();
+    let overlap = generated_set.intersection(&reference_set).count();
 
     let precision = overlap as f64 / generated_tokens.len() as f64;
     let recall = overlap as f64 / reference_tokens.len() as f64;
@@ -249,7 +247,7 @@ mod tests {
         let ref_len = 3.0;
         let lcs = 2.0;
         let precision = lcs / gen_len; // 2/3
-        let recall = lcs / ref_len;    // 2/3
+        let recall = lcs / ref_len; // 2/3
         let expected_f1 = 2.0 * (precision * recall) / (precision + recall); // 2/3
         assert!((score - expected_f1).abs() < 0.01);
     }

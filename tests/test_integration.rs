@@ -1,7 +1,7 @@
 use genai_benchmark::{
     aggregate_phase_results, calculate_f1_score, calculate_quality_scores, load_dataset,
     BenchmarkConfig, BenchmarkPhase, BenchmarkResult, DatasetConfig, Message, PhaseConfig,
-    RequestMetrics,
+    RequestMetrics, RequestType,
 };
 
 /// Test that datasets can be loaded without errors
@@ -12,7 +12,10 @@ async fn test_all_dataset_types_load() {
     let prompts = load_dataset(&synthetic_config, 5).await;
     assert!(prompts.is_ok(), "Synthetic dataset should load");
     let synthetic_prompts = prompts.unwrap();
-    assert!(!synthetic_prompts.is_empty(), "Should load synthetic prompts");
+    assert!(
+        !synthetic_prompts.is_empty(),
+        "Should load synthetic prompts"
+    );
     assert_eq!(synthetic_prompts.len(), 5, "Should load exactly 5 prompts");
 
     // ShareGPT format (with defaults)
@@ -58,6 +61,18 @@ fn test_metrics_aggregation_complete() {
         f1_scores: vec![0.75, 0.76, 0.74, 0.75, 0.75],
         rouge_l_scores: vec![0.68, 0.69, 0.67, 0.68, 0.68],
         sample_prompts: vec!["Prompt 1".to_string(), "Prompt 2".to_string()],
+        sample_outputs: vec![],
+        request_type: RequestType::ChatCompletion,
+        audio_input_requests: 0,
+        audio_output_requests: 0,
+        total_audio_input_bytes: 0,
+        total_audio_output_bytes: 0,
+        total_images_generated: 0,
+        total_image_bytes: 0,
+        image_generation_time_values: vec![],
+        total_reasoning_tokens: 0,
+        requests_with_reasoning: 0,
+        thinking_time_values: Vec::new(),
     };
 
     let result2 = BenchmarkResult {
@@ -91,6 +106,18 @@ fn test_metrics_aggregation_complete() {
         f1_scores: vec![0.80, 0.80, 0.80, 0.80, 0.80],
         rouge_l_scores: vec![0.72, 0.72, 0.72, 0.72, 0.72],
         sample_prompts: vec!["Prompt 2".to_string(), "Prompt 3".to_string()],
+        sample_outputs: vec![],
+        request_type: RequestType::ChatCompletion,
+        audio_input_requests: 0,
+        audio_output_requests: 0,
+        total_audio_input_bytes: 0,
+        total_audio_output_bytes: 0,
+        total_images_generated: 0,
+        total_image_bytes: 0,
+        image_generation_time_values: vec![],
+        total_reasoning_tokens: 0,
+        requests_with_reasoning: 0,
+        thinking_time_values: Vec::new(),
     };
 
     let aggregated = aggregate_phase_results(&[result1, result2]);
@@ -127,7 +154,10 @@ fn test_quality_metrics_realistic_examples() {
         "machine learning is a subset of artificial intelligence",
     );
     assert!((f1 - 1.0).abs() < 0.001, "Perfect match should have F1=1.0");
-    assert!((rouge_l - 1.0).abs() < 0.001, "Perfect match should have ROUGE-L=1.0");
+    assert!(
+        (rouge_l - 1.0).abs() < 0.001,
+        "Perfect match should have ROUGE-L=1.0"
+    );
 
     // Test case 2: Partial match (synonym)
     let (f1, rouge_l) = calculate_quality_scores(
@@ -135,7 +165,10 @@ fn test_quality_metrics_realistic_examples() {
         "deep learning is a form of machine learning",
     );
     assert!(f1 > 0.5, "Partial match should have decent F1 score");
-    assert!(rouge_l > 0.5, "Partial match should have decent ROUGE-L score");
+    assert!(
+        rouge_l > 0.5,
+        "Partial match should have decent ROUGE-L score"
+    );
 
     // Test case 3: No match
     let (f1, rouge_l) = calculate_quality_scores(
@@ -171,13 +204,26 @@ fn test_request_metrics_calculations() {
         verification_success: false,
         verification_time_ms: 0.0,
         prompt_preview: "What is machine learning?".to_string(),
+        output_preview: "Machine learning is...".to_string(),
         cache_metrics: None,
         quality_metrics: None,
+        request_type: RequestType::ChatCompletion,
+        audio_input_size_bytes: None,
+        audio_output_size_bytes: None,
+        has_audio_output: false,
+        image_count: 0,
+        total_image_size_bytes: 0,
+        reasoning_tokens: 0,
+        time_to_first_reasoning_token_ms: None,
+        thinking_time_ms: None,
     };
 
     // Test TPOT calculation
     let tpot = metrics.tpot_ms();
-    assert!(tpot.is_some(), "Should calculate TPOT for output tokens > 1");
+    assert!(
+        tpot.is_some(),
+        "Should calculate TPOT for output tokens > 1"
+    );
     let tpot_value = tpot.unwrap();
     assert!(tpot_value > 0.0, "TPOT should be positive");
     assert!(tpot_value < 25.0, "TPOT should be less than 25ms");
@@ -263,6 +309,18 @@ fn test_benchmark_result_calculations() {
         f1_scores: vec![0.75, 0.75, 0.75],
         rouge_l_scores: vec![0.68, 0.68, 0.68],
         sample_prompts: vec!["Prompt 1".to_string()],
+        sample_outputs: vec![],
+        request_type: RequestType::ChatCompletion,
+        audio_input_requests: 0,
+        audio_output_requests: 0,
+        total_audio_input_bytes: 0,
+        total_audio_output_bytes: 0,
+        total_images_generated: 0,
+        total_image_bytes: 0,
+        image_generation_time_values: vec![],
+        total_reasoning_tokens: 0,
+        requests_with_reasoning: 0,
+        thinking_time_values: Vec::new(),
     };
 
     // Test throughput calculations
@@ -272,7 +330,10 @@ fn test_benchmark_result_calculations() {
 
     let token_throughput = result.output_token_throughput();
     assert!(token_throughput > 0.0);
-    assert!((token_throughput - 2000.0).abs() < 100.0, "Should be ~2000 tokens/s");
+    assert!(
+        (token_throughput - 2000.0).abs() < 100.0,
+        "Should be ~2000 tokens/s"
+    );
 
     // Test success rate
     let success_rate = result.success_rate();
@@ -286,33 +347,21 @@ fn test_benchmark_result_calculations() {
 /// Test message structure for various benchmark types
 #[test]
 fn test_message_creation_and_handling() {
-    let msg = Message {
-        role: "user".to_string(),
-        content: "What is machine learning?".to_string(),
-    };
+    let msg = Message::text("user", "What is machine learning?");
 
     assert_eq!(msg.role, "user");
-    assert_eq!(msg.content, "What is machine learning?");
+    assert_eq!(msg.content.as_text(), Some("What is machine learning?"));
 
     // Test message cloning
     let msg2 = msg.clone();
     assert_eq!(msg2.role, msg.role);
-    assert_eq!(msg2.content, msg.content);
+    assert_eq!(msg2.content.as_text(), msg.content.as_text());
 
     // Test multiple message types
-    let messages = vec![
-        Message {
-            role: "system".to_string(),
-            content: "You are a helpful assistant.".to_string(),
-        },
-        Message {
-            role: "user".to_string(),
-            content: "Explain machine learning.".to_string(),
-        },
-        Message {
-            role: "assistant".to_string(),
-            content: "Machine learning is a field of AI...".to_string(),
-        },
+    let messages = [
+        Message::text("system", "You are a helpful assistant."),
+        Message::text("user", "Explain machine learning."),
+        Message::text("assistant", "Machine learning is a field of AI..."),
     ];
 
     assert_eq!(messages.len(), 3);
@@ -363,6 +412,11 @@ fn test_benchmark_config_creation() {
         verify: false,
         random_prompt_selection: false,
         random_seed: None,
+        request_type: RequestType::ChatCompletion,
+        image_config: None,
+        audio_input: None,
+        audio_output: false,
+        image_output_dir: None,
     };
 
     assert_eq!(config.model, "gpt-4");
@@ -408,6 +462,18 @@ fn test_quality_metrics_aggregation() {
             f1_scores: vec![0.75; 50],
             rouge_l_scores: vec![0.70; 50],
             sample_prompts: vec!["Test".to_string()],
+            sample_outputs: vec![],
+            request_type: RequestType::ChatCompletion,
+            audio_input_requests: 0,
+            audio_output_requests: 0,
+            total_audio_input_bytes: 0,
+            total_audio_output_bytes: 0,
+            total_images_generated: 0,
+            total_image_bytes: 0,
+            image_generation_time_values: vec![],
+            total_reasoning_tokens: 0,
+            requests_with_reasoning: 0,
+            thinking_time_values: Vec::new(),
         },
         BenchmarkResult {
             name: Some("Test2".to_string()),
@@ -440,6 +506,18 @@ fn test_quality_metrics_aggregation() {
             f1_scores: vec![0.80; 50],
             rouge_l_scores: vec![0.75; 50],
             sample_prompts: vec!["Test".to_string()],
+            sample_outputs: vec![],
+            request_type: RequestType::ChatCompletion,
+            audio_input_requests: 0,
+            audio_output_requests: 0,
+            total_audio_input_bytes: 0,
+            total_audio_output_bytes: 0,
+            total_images_generated: 0,
+            total_image_bytes: 0,
+            image_generation_time_values: vec![],
+            total_reasoning_tokens: 0,
+            requests_with_reasoning: 0,
+            thinking_time_values: Vec::new(),
         },
     ];
 
@@ -484,6 +562,18 @@ fn test_cache_metrics_aggregation() {
         f1_scores: vec![],
         rouge_l_scores: vec![],
         sample_prompts: vec![],
+        sample_outputs: vec![],
+        request_type: RequestType::ChatCompletion,
+        audio_input_requests: 0,
+        audio_output_requests: 0,
+        total_audio_input_bytes: 0,
+        total_audio_output_bytes: 0,
+        total_images_generated: 0,
+        total_image_bytes: 0,
+        image_generation_time_values: vec![],
+        total_reasoning_tokens: 0,
+        requests_with_reasoning: 0,
+        thinking_time_values: Vec::new(),
     };
 
     let result2 = BenchmarkResult {
@@ -517,6 +607,18 @@ fn test_cache_metrics_aggregation() {
         f1_scores: vec![],
         rouge_l_scores: vec![],
         sample_prompts: vec![],
+        sample_outputs: vec![],
+        request_type: RequestType::ChatCompletion,
+        audio_input_requests: 0,
+        audio_output_requests: 0,
+        total_audio_input_bytes: 0,
+        total_audio_output_bytes: 0,
+        total_images_generated: 0,
+        total_image_bytes: 0,
+        image_generation_time_values: vec![],
+        total_reasoning_tokens: 0,
+        requests_with_reasoning: 0,
+        thinking_time_values: Vec::new(),
     };
 
     let aggregated = aggregate_phase_results(&[result1, result2]);
@@ -544,6 +646,11 @@ fn test_backward_compatibility() {
         verify: false,
         random_prompt_selection: false,
         random_seed: None,
+        request_type: RequestType::ChatCompletion,
+        image_config: None,
+        audio_input: None,
+        audio_output: false,
+        image_output_dir: None,
     };
 
     assert_eq!(legacy_config.max_tokens, 256);
@@ -574,6 +681,5 @@ fn test_dataset_config_variants() {
         use_precomputed_cache: false,
     };
 
-    // All variants created successfully
-    assert!(true);
+    // All variants created successfully - if we reach here, the test passed
 }

@@ -1,6 +1,6 @@
 use genai_benchmark::{
-    aggregate_phase_results, run_multi_phase_benchmark, BenchmarkConfig, BenchmarkPhase, Message,
-    PhaseConfig,
+    aggregate_phase_results, run_multi_phase_benchmark, BenchmarkConfig, BenchmarkPhase,
+    BenchmarkResult, Message, PhaseConfig, RequestType,
 };
 
 #[tokio::test]
@@ -19,18 +19,17 @@ async fn test_multi_phase_execution() {
         verify: false,
         random_prompt_selection: false,
         random_seed: None,
+        request_type: RequestType::ChatCompletion,
+        image_config: None,
+        audio_input: None,
+        audio_output: false,
+        image_output_dir: None,
     };
 
     // Create test prompts
     let prompts = vec![
-        vec![Message {
-            role: "user".to_string(),
-            content: "Test question 1".to_string(),
-        }],
-        vec![Message {
-            role: "user".to_string(),
-            content: "Test question 2".to_string(),
-        }],
+        vec![Message::text("user", "Test question 1")],
+        vec![Message::text("user", "Test question 2")],
     ];
 
     // Create multi-phase config
@@ -60,7 +59,6 @@ async fn test_multi_phase_execution() {
         }
         Err(_) => {
             // Expected since we have no actual server
-            assert!(true, "Expected error due to no server");
         }
     }
 }
@@ -74,8 +72,6 @@ fn test_aggregate_phase_results_empty() {
 
 #[test]
 fn test_aggregate_phase_results_single() {
-    use genai_benchmark::BenchmarkResult;
-
     let phase_result = BenchmarkResult {
         name: Some("Phase 1".to_string()),
         successful_requests: 50,
@@ -107,6 +103,18 @@ fn test_aggregate_phase_results_single() {
         f1_scores: vec![],
         rouge_l_scores: vec![],
         sample_prompts: vec!["Prompt 1".to_string()],
+        sample_outputs: vec![],
+        request_type: RequestType::ChatCompletion,
+        audio_input_requests: 0,
+        audio_output_requests: 0,
+        total_audio_input_bytes: 0,
+        total_audio_output_bytes: 0,
+        total_images_generated: 0,
+        total_image_bytes: 0,
+        image_generation_time_values: vec![],
+        total_reasoning_tokens: 0,
+        requests_with_reasoning: 0,
+        thinking_time_values: Vec::new(),
     };
 
     let aggregated = aggregate_phase_results(&[phase_result]);
@@ -121,8 +129,6 @@ fn test_aggregate_phase_results_single() {
 
 #[test]
 fn test_aggregate_phase_results_multiple() {
-    use genai_benchmark::BenchmarkResult;
-
     let phase1 = BenchmarkResult {
         name: Some("Warmup".to_string()),
         successful_requests: 40,
@@ -154,6 +160,18 @@ fn test_aggregate_phase_results_multiple() {
         f1_scores: vec![],
         rouge_l_scores: vec![],
         sample_prompts: vec!["Prompt 1".to_string()],
+        sample_outputs: vec![],
+        request_type: RequestType::ChatCompletion,
+        audio_input_requests: 0,
+        audio_output_requests: 0,
+        total_audio_input_bytes: 0,
+        total_audio_output_bytes: 0,
+        total_images_generated: 0,
+        total_image_bytes: 0,
+        image_generation_time_values: vec![],
+        total_reasoning_tokens: 0,
+        requests_with_reasoning: 0,
+        thinking_time_values: Vec::new(),
     };
 
     let phase2 = BenchmarkResult {
@@ -187,6 +205,18 @@ fn test_aggregate_phase_results_multiple() {
         f1_scores: vec![],
         rouge_l_scores: vec![],
         sample_prompts: vec!["Prompt 1".to_string(), "Prompt 2".to_string()],
+        sample_outputs: vec![],
+        request_type: RequestType::ChatCompletion,
+        audio_input_requests: 0,
+        audio_output_requests: 0,
+        total_audio_input_bytes: 0,
+        total_audio_output_bytes: 0,
+        total_images_generated: 0,
+        total_image_bytes: 0,
+        image_generation_time_values: vec![],
+        total_reasoning_tokens: 0,
+        requests_with_reasoning: 0,
+        thinking_time_values: Vec::new(),
     };
 
     let aggregated = aggregate_phase_results(&[phase1, phase2]);

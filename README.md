@@ -32,6 +32,13 @@ export AWS_BEARER_TOKEN_BEDROCK=your-token
 genai-benchmark run near-vs-bedrock
 ```
 
+You can also use a `.env` file in the current directory to set environment variables:
+```bash
+# .env
+NEARAI_API_KEY=your-key
+AWS_BEARER_TOKEN_BEDROCK=your-token
+```
+
 ### Export and customize a scenario
 ```bash
 genai-benchmark export near-vs-bedrock > my-benchmark.yaml
@@ -123,6 +130,32 @@ Image generation metrics include:
 - Images per second (throughput)
 - Data throughput (MB/s)
 - TEE signature verification status
+
+### Multi-Phase Benchmarks
+
+Multi-phase benchmarks allow testing cache effectiveness with warmup and query phases:
+
+```bash
+# List available multi-phase scenarios
+genai-benchmark list
+
+# Run built-in multi-phase scenarios
+genai-benchmark run same-doc-qa      # Same document QA benchmark
+genai-benchmark run multi-round-qa   # Multi-round conversation QA
+genai-benchmark run rag              # RAG with quality metrics
+genai-benchmark run long-doc-qa      # Long document QA
+genai-benchmark run multi-doc-qa     # Multi-document QA
+
+# Run a custom multi-phase scenario file
+genai-benchmark multi-phase-scenario my-scenario.yaml
+```
+
+Multi-phase scenarios support:
+- **Warmup phase**: Prime the cache with initial requests
+- **Query phase**: Measure cache hit rates and performance
+- **Cache metrics**: Track cache effectiveness across providers
+- **Quality metrics**: F1 and ROUGE-L scores for answer quality
+- **Provider comparison**: Compare with and without cache systems
 
 ## Installation
 
