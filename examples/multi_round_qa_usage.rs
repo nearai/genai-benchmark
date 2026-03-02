@@ -1,5 +1,5 @@
 use genai_benchmark::{
-    run_benchmark, load_dataset, BenchmarkConfig, DatasetConfig, ConversationManager, Message,
+    load_dataset, run_benchmark, BenchmarkConfig, ConversationManager, DatasetConfig, RequestType,
 };
 
 #[tokio::main]
@@ -18,6 +18,11 @@ async fn main() -> anyhow::Result<()> {
         verify: false,
         random_prompt_selection: false,
         random_seed: None,
+        request_type: RequestType::ChatCompletion,
+        image_config: None,
+        audio_input: None,
+        audio_output: false,
+        image_output_dir: None,
     };
 
     // Load multi-round QA dataset
@@ -54,7 +59,7 @@ async fn main() -> anyhow::Result<()> {
         // Move to next round
         conversation_manager.next_round(&user_id).await;
         let round = conversation_manager.get_round(&user_id).await;
-        println!("User {} is now on round {}", user_id, round);
+        println!("User {user_id} is now on round {round}");
     }
 
     // Run actual benchmark with conversation support

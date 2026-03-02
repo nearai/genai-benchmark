@@ -1,4 +1,4 @@
-use genai_benchmark::{BenchmarkConfig, run_benchmark, load_dataset, DatasetConfig};
+use genai_benchmark::{load_dataset, run_benchmark, BenchmarkConfig, DatasetConfig, RequestType};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -15,6 +15,11 @@ async fn main() -> anyhow::Result<()> {
         verify: false,
         random_prompt_selection: false,
         random_seed: None,
+        request_type: RequestType::ChatCompletion,
+        image_config: None,
+        audio_input: None,
+        audio_output: false,
+        image_output_dir: None,
     };
 
     let dataset = DatasetConfig::Synthetic { seed: Some(42) };

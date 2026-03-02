@@ -1,6 +1,6 @@
 use genai_benchmark::{
-    run_multi_phase_benchmark, load_dataset, BenchmarkConfig, BenchmarkPhase, PhaseConfig,
-    DatasetConfig, ConversationManager,
+    load_dataset, run_multi_phase_benchmark, BenchmarkConfig, BenchmarkPhase, ConversationManager,
+    DatasetConfig, PhaseConfig, RequestType,
 };
 
 #[tokio::main]
@@ -19,6 +19,11 @@ async fn main() -> anyhow::Result<()> {
         verify: false,
         random_prompt_selection: false,
         random_seed: None,
+        request_type: RequestType::ChatCompletion,
+        image_config: None,
+        audio_input: None,
+        audio_output: false,
+        image_output_dir: None,
     };
 
     // Load prompts
@@ -43,8 +48,8 @@ async fn main() -> anyhow::Result<()> {
 
     // Run multi-phase benchmark with conversation manager for multi-turn support
     let conversation_manager = ConversationManager::new();
-    let results = run_multi_phase_benchmark(&config, prompts, phases, Some(&conversation_manager))
-        .await?;
+    let results =
+        run_multi_phase_benchmark(&config, prompts, phases, Some(&conversation_manager)).await?;
 
     // Print aggregated results
     for result in results {
